@@ -1,3 +1,5 @@
+<img src="./diagram.png" width="450px"></img>
+
 ## Self-Rewarding Language Model (wip)
 
 Implementation of the training framework proposed in <a href="https://arxiv.org/abs/2401.10020">Self-Rewarding Language Model</a>, from MetaAI
