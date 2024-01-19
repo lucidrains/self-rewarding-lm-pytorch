@@ -17,7 +17,9 @@ setup(
     'direct preference optimization'
   ],
   install_requires=[
+    'accelerate',
     'einops>=0.7.0',
+    'pytorch-custom-utils>=0.0.12',
     'torch>=2.0'
   ],
   classifiers=[
