@@ -52,10 +52,12 @@ class SelfRewardingTrainer(Module):
         model: Module,
         *,
         num_iterations = 3,
-        beta = 0.1
+        beta = 0.1,
+        reward_prompt = DEFAULT_REWARD_PROMPT
     ):
         super().__init__()
         self.num_iterations = num_iterations
+        self.reward_prompt = reward_prompt
 
         self.model_with_dpo = DPO(model, beta = beta)
 
