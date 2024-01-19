@@ -4,6 +4,8 @@
 
 Implementation of the training framework proposed in <a href="https://arxiv.org/abs/2401.10020">Self-Rewarding Language Model</a>, from MetaAI
 
+They really took the <a href="https://arxiv.org/abs/2305.18290">title of the DPO paper</a> to heart.
+
 ## Citation
 
 ```bibtex
