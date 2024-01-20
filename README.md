@@ -6,6 +6,10 @@ Implementation of the training framework proposed in <a href="https://arxiv.org/
 
 They really took the <a href="https://arxiv.org/abs/2305.18290">title of the DPO paper</a> to heart.
 
+## Appreciation
+
+- <a href="https://a16z.com/supporting-the-open-source-ai-community/">A16Z Open Source AI Grant Program</a> and <a href="https://huggingface.co/">🤗 Huggingface</a> for the generous sponsorships, as well as my other sponsors, for affording me the independence to open source current artificial intelligence research
+
 ## Citation
 
 ```bibtex

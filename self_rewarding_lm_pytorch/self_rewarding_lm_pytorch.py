@@ -23,7 +23,7 @@ def exists(v):
 # llm-as-judge prompt
 # https://openreview.net/forum?id=uccHPGDlao
 
-DEFAULT_REWARD_PROMPT = """
+DEFAULT_LLM_AS_JUDGE_PROMPT = """
 Review the user’s question and the corresponding response using the additive 5-point
 scoring system described below. Points are accumulated based on the satisfaction of each
 criterion:
@@ -50,6 +50,15 @@ necessary. To evaluate the response in alignment with this additive scoring mode
 systematically attribute points based on the outlined criteria.
 """
 
+# config, allowing for different types of reward prompting
+# colocate with functions for extracting the response and reward
+
+REWARD_PROMPT_CONFIG = dict(
+    default = dict(
+        prompt = DEFAULT_LLM_AS_JUDGE_PROMPT
+    )
+)
+
 # fine tuning class
 
 class SelfRewardingTrainer(Module):
@@ -58,9 +67,9 @@ class SelfRewardingTrainer(Module):
         self,
         model: Module,
         *,
-        num_iterations = 3,
         beta = 0.1,
-        reward_prompt = DEFAULT_REWARD_PROMPT
+        num_iterations = 3,
+        reward_prompt: dict = REWARD_PROMPT_CONFIG
     ):
         super().__init__()
         self.num_iterations = num_iterations
