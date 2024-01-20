@@ -99,7 +99,7 @@ class DPOTrainer(Module):
         self,
         dpo: DPO,
         *,
-        accelerate: Accelerator,
+        accelerator: Accelerator,
         train_dataset: Dataset,
         val_dataset: Dataset,
         start_learning_rate: float = 1e-6,

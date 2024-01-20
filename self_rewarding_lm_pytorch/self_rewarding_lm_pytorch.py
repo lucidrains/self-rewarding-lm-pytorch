@@ -59,6 +59,24 @@ REWARD_PROMPT_CONFIG = dict(
     )
 )
 
+# sft trainer
+
+class SFTTrainer(Module):
+    @beartype
+    def __init__(
+        self,
+        model: Module,
+        *,
+        accelerator: Accelerator,
+        train_dataset: Dataset,
+        val_dataset: Dataset
+    ):
+        super().__init__()
+        self.model = model
+
+    def forward(self):
+        raise NotImplementedError
+
 # fine tuning class
 
 class SelfRewardingTrainer(Module):
@@ -67,8 +85,9 @@ class SelfRewardingTrainer(Module):
         self,
         model: Module,
         *,
+        sft_dataset: Optional[Dataset] = None,
         beta = 0.1,
-        num_iterations = 3,
+        self_reward_num_iterations = 2,
         reward_prompt: dict = REWARD_PROMPT_CONFIG
     ):
         super().__init__()
