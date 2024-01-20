@@ -1,6 +1,12 @@
+from pathlib import Path
+
 import torch
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
+
+from numpy.lib.format import open_memmap
+
+from beartype import beartype
 
 from self_rewarding_lm_pytorch.dpo import DPO
 
@@ -47,6 +53,7 @@ systematically attribute points based on the outlined criteria.
 # fine tuning class
 
 class SelfRewardingTrainer(Module):
+    @beartype
     def __init__(
         self,
         model: Module,
@@ -59,7 +66,7 @@ class SelfRewardingTrainer(Module):
         self.num_iterations = num_iterations
         self.reward_prompt = reward_prompt
 
-        self.model_with_dpo = DPO(model, beta = beta)
+        self.model = model
 
     def forward(self):
         raise NotImplementedError
