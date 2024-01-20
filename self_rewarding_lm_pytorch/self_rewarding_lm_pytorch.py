@@ -3,10 +3,12 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
+from torch.utils.data import Dataset
 
 from numpy.lib.format import open_memmap
 
 from beartype import beartype
+from beartype.typing import Optional
 
 from self_rewarding_lm_pytorch.dpo import DPO
 
@@ -77,6 +79,22 @@ class SFTTrainer(Module):
     def forward(self):
         raise NotImplementedError
 
+# reward generator class
+
+
+class RewardGenerator(Module):
+    @beartype
+    def __init__(
+        self,
+        model: Module,
+        *,
+        reward_config: dict
+    ):
+        raise NotImplementedError
+
+    def forward(self) -> Dataset:
+        raise NotImplementedError
+
 # fine tuning class
 
 class SelfRewardingTrainer(Module):
@@ -85,16 +103,81 @@ class SelfRewardingTrainer(Module):
         self,
         model: Module,
         *,
-        sft_dataset: Optional[Dataset] = None,
+        train_sft_dataset: Optional[Dataset] = None,
+        valid_sft_dataset: Optional[Dataset] = None,
         beta = 0.1,
         self_reward_num_iterations = 2,
-        reward_prompt: dict = REWARD_PROMPT_CONFIG
+        reward_prompt_config: dict = REWARD_PROMPT_CONFIG,
+        reward_iteration_type = ['default', 'default'],
+        accelerate_kwargs: dict = dict(),
+        checkpoints_folder: str = './checkpoints',
+        sft_trainer_kwargs: dict = dict(),
+        dpo_trainer_kwargs: dict = dict()
     ):
         super().__init__()
-        self.num_iterations = num_iterations
-        self.reward_prompt = reward_prompt
+        assert all([key in reward_prompt_config for key in reward_iteration_type]), f'reward prompt must be one of {reward_prompt_config.keys()}'
+
+        self.reward_prompt_configs = [reward_prompt_config[key] for key in reward_iteration_type]
+        self.self_reward_num_iterations = self_reward_num_iterations
 
         self.model = model
+        self.first_iterate_on_sft = exists(train_sft_dataset)
+
+        self.accelerator = Accelerator(**accelerate_kwargs)
+
+        self.sft_trainer = None
+        if self.first_iterate_on_sft:
+            self.sft_trainer = SFTTrainer(
+                model,
+                accelerator = self.accelerator,
+                train_dataset = train_sft_dataset,
+                valid_dataset = valid_sft_dataset,
+                **sft_trainer_kwargs
+            )
+
+        self.reward_generators = [RewardGenerator(model = model, reward_config = reward_config) for reward_config in self.reward_prompt_configs]
+
+        self.dpo = DPO(model)
+
+        self.dpo_trainer = DPOTrainer(
+            dpo = self.dpo,
+            accelerator = self.accelerator,
+            **dpo_trainer_kwargs
+        )
+
+        checkpoints_folder = Path(checkpoints_folder)
+        checkpoints_folder.mkdir(parents = True, exist_ok = True)
+        self.checkpoints_folder = checkpoints_folder
+
+    def save(self, path: str, overwrite: bool = False):
+        if not self.accelerator.is_main_process:
+            return
+
+        path = self.checkpoints_folder / path
+
+        assert not path.exists() or overwrite, f'file already exists'
+
+        pkg = dict(
+            model = self.model.state_dict()
+        )
+
+        torch.save(pkg, str(path))
 
     def forward(self):
-        raise NotImplementedError
+
+        if self.first_iterate_on_sft:
+            self.sft_trainer()
+            self.save('sft.ckpt.pt')
+
+        for ind, reward_generator in enumerate(range(self.reward_generators)):
+            iterate_num = ind + 1
+
+            self_reward_dataset = reward_generator()
+
+            self.dpo_trainer(self_reward_dataset)
+
+            self.dpo.update_reference_model_with_policy()
+
+            self.save(f'self-reward.{iterate_num}.ckpt.pt')
+
+        print(f'done')

@@ -100,12 +100,14 @@ class DPOTrainer(Module):
         dpo: DPO,
         *,
         accelerator: Accelerator,
-        train_dataset: Dataset,
         val_dataset: Dataset,
         start_learning_rate: float = 1e-6,
         end_learning_rate: float = 1e-7
     ):
         super().__init__()
 
-    def forward(self):
+    def forward(
+        self,
+        train_self_reward_dataset: Dataset
+    ):
         raise NotImplementedError
