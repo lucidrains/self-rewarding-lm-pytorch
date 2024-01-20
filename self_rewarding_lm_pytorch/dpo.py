@@ -3,9 +3,7 @@ from copy import deepcopy
 import torch
 from torch.nn import Module
 import torch.nn.functional as F
-from x_transformers.x_transformers import TransformerWrapper
 
-from einops import rearrange
 from einx import get_at
 
 # helper functions
@@ -17,17 +15,10 @@ def freeze_all_layers_(module):
     for param in module.parameters():
         param.requires_grad = False
 
-def log(t, eps = 1e-20):
-    return torch.log(t.clamp(min = eps))
-
-def log_prob(prob, indices, eps = 1e-20):
-    log_probs = log(get_at('b n [c], b n -> b n', prob, indices), eps = eps)
-    return log_probs
-
 def log_prob_from_model_and_seq(model, seq):
     logits = model(seq)
     prob = logits.softmax(dim = -1)
-    return log_prob(prob, seq)
+    return get_at('b n [c], b n -> b n', prob, indices).clamp(min = eps).log()
 
 # main class
 

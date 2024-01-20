@@ -19,6 +19,7 @@ setup(
   install_requires=[
     'accelerate',
     'einops>=0.7.0',
+    'einx',
     'pytorch-custom-utils>=0.0.12',
     'torch>=2.0'
   ],
