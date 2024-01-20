@@ -9,6 +9,7 @@ from torch.utils.data import Dataset, DataLoader
 from accelerate import Accelerator
 
 from beartype import beartype
+from beartype.typing import Optional
 
 from einx import get_at
 
@@ -21,6 +22,8 @@ from pytorch_custom_utils.accelerate_utils import (
     auto_unwrap_model,
     model_forward_contexts
 )
+
+from torchtyping import TensorType
 
 # helper functions
 
@@ -35,6 +38,17 @@ def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     logits = model(seq)
     prob = logits.softmax(dim = -1)
     return get_at('b n [c], b n -> b n', prob, indices).clamp(min = eps).log()
+
+def maybe_and_mask(*masks):
+    masks = [*filter(exists, masks)]
+    if len(masks) == 0:
+        return None
+
+    mask, *rest_masks = masks
+    for rest_mask in rest_masks:
+        mask = mask & rest_mask
+
+    return mask
 
 # main class
 
@@ -62,10 +76,17 @@ class DPO(Module):
     @autocast(enabled = False)
     def forward(
         self,
-        preferred_seq,
-        unpreferred_seq,
-        prompt_mask = None
+        preferred_seq: TensorType['b', 'n', int],
+        unpreferred_seq: TensorType['b', 'n', int],
+        prompt_mask: Optional[TensorType['b', 'n', bool]] = None,
+        preferred_seq_mask: Optional[TensorType['b', 'n', bool]] = None,
+        unpreferred_seq_mask: Optional[TensorType['b', 'n', bool]] = None
     ):
+        """
+        b - batch
+        n - sequence length
+        """
+
         assert preferred_seq.ndim == 2
         assert preferred_seq.shape == unpreferred_seq.shape
 
@@ -86,8 +107,10 @@ class DPO(Module):
 
         losses = -F.logsigmoid(self.beta * (policy_logratios - ref_logratios))
 
-        if exists(prompt_mask):
-            losses = losses[~prompt_mask]
+        loss_mask = maybe_and_mask(preferred_seq_mask, unpreferred_seq, ~prompt_mask)
+
+        if exists(loss_mask):
+            losses = losses[loss_mask]
 
         return losses.mean()
 

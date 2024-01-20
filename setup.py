@@ -23,7 +23,8 @@ setup(
     'einx',
     'numpy',
     'pytorch-custom-utils>=0.0.12',
-    'torch>=2.0'
+    'torch>=2.0',
+    'torchtyping'
   ],
   classifiers=[
     'Development Status :: 4 - Beta',
