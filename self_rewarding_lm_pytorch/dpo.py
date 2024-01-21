@@ -94,7 +94,8 @@ class EarlyStopper(Module):
         self,
         model: Module,
         dataset: Dataset,
-        calculate_should_stop: Callable[..., bool] = lambda past_scores, score: len(past_scores) > 0 and score < past_scores[-1]
+        calculate_should_stop: Callable[..., bool] = lambda past_scores, score: len(past_scores) > 0 and score < past_scores[-1],
+        early_stop_checkpoint_folder: str = './early-stop-checkpoint'
     ):
         super().__init__()
         self.model = model
@@ -102,6 +103,23 @@ class EarlyStopper(Module):
         self.calculate_should_stop = calculate_should_stop
 
         self.val_dl = DataLoader(dataset, batch_size  = batch_size, shuffle = True, drop_last = True)
+
+        self.early_stop_checkpoint_folder = Path(early_stop_checkpoint_folder)
+        self.early_stop_checkpoint_folder.mkdir(exist_ok = True, parents = True)
+
+    def save(self, path: str, overwrite: bool = False):
+        if not self.accelerator.is_main_process:
+            return
+
+        path = self.checkpoints_folder / path
+
+        assert not path.exists() or overwrite, f'file already exists'
+
+        pkg = dict(
+            model = self.model.state_dict()
+        )
+
+        torch.save(pkg, str(path))
 
     @torch.no_grad()
     def forward(self) -> EarlyStopperReturn:
@@ -111,6 +129,15 @@ class EarlyStopper(Module):
 
         should_stop = self.calculate_should_stop(self.scores, score)
         self.scores.append(score)
+
+        if should_stop:
+            prev_checkpoint_filename = f'model.ckpt.{len(self.scores) - 1}.pt'
+            pkg = torch.load(prev_checkpoint_filename)
+
+            self.model.load_state_dict(pkg['model'])
+        else:
+            checkpoint_filename = f'model.ckpt.{len(self.scores)}.pt'
+            self.save(checkpoint_filename)
 
         return EarlyStopperReturn(score, should_stop)
 
