@@ -79,14 +79,19 @@ class SFTTrainer(Module):
         train_dataset: Union[List[Dataset], Dataset],
         val_dataset: Optional[Dataset] = None,
         batch_size: int = 16,
+        num_epochs: int = 3,
         start_learning_rate: float = 5.5e-6,
         end_learning_rate: float = 1.1e-6,
         weight_decay: float = 0.,
+        ignore_index: int = -1,
         adam_kwargs: dict = dict()
     ):
         super().__init__()
         self.accelerator = accelerator
         self.model = model
+
+        self.num_epochs = num_epochs
+        self.ignore_index = ignore_index
 
         if isinstance(train_dataset, list):
             train_dataset = ConcatDataset(train_dataset)
@@ -109,7 +114,21 @@ class SFTTrainer(Module):
             self.val_dataloader = DataLoader(val_dataset, batch_size = batch_size, drop_last = True, shuffle = True)
 
     def forward(self):
-        raise NotImplementedError
+        for epoch in self.num_epochs:
+            for seq in self.train_dataloader:
+                seq, labels = seq[: :-1], seq[:, 1:]
+
+                logits = self.model(seq)
+
+                ce_loss = F.cross_entropy(
+                    rearrange(logits, 'b n l -> b l n'),
+                    labels,
+                    ignore_index = self.ignore_index
+                )
+
+                self.accelerator.backward(ce_loss)
+                self.optimizer.step()
+                self.optimizer.zero_grad()
 
 # reward generator class
 
