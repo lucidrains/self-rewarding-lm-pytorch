@@ -132,12 +132,15 @@ class EarlyStopper(Module):
 
         if should_stop:
             prev_checkpoint_filename = f'model.ckpt.{len(self.scores) - 1}.pt'
-            pkg = torch.load(prev_checkpoint_filename)
+            ckpt_path = self.early_stop_checkpoint_folder / prev_checkpoint_filename
+
+            pkg = torch.load(str(ckpt_path))
 
             self.model.load_state_dict(pkg['model'])
         else:
             checkpoint_filename = f'model.ckpt.{len(self.scores)}.pt'
-            self.save(checkpoint_filename)
+            ckpt_path = self.early_stop_checkpoint_folder / checkpoint_filename
+            self.save(str(ckpt_path))
 
         return EarlyStopperReturn(score, should_stop)
 
