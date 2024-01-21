@@ -10,7 +10,11 @@ from numpy.lib.format import open_memmap
 from beartype import beartype
 from beartype.typing import Optional
 
-from self_rewarding_lm_pytorch.dpo import DPO
+from self_rewarding_lm_pytorch.dpo import (
+    DPO,
+    set_dropout_,
+    adam_optimizer_with_linear_decay
+)
 
 from einops import rearrange
 
@@ -71,10 +75,27 @@ class SFTTrainer(Module):
         *,
         accelerator: Accelerator,
         train_dataset: Dataset,
-        val_dataset: Dataset
+        val_dataset: Optional[Dataset] = None,
+        batch_size: int = 16,
+        start_learning_rate: float = 5.5e-6,
+        end_learning_rate: float = 1.1e-6,
+        weight_decay: float = 0.,
+        adam_kwargs: dict = dict()
     ):
         super().__init__()
         self.model = model
+
+        self.optimizer = adam_optimizer_with_linear_decay(
+            model,
+            start_learning_rate,
+            end_learning_rate,
+            weight_decay = weight_decay,
+            adam_kwargs = adam_kwargs
+        )
+
+        self.val_dataloader = None
+        if exists(val_dataset):
+            self.val_dataloader = DataLoader(val_dataset, batch_size = batch_size, drop_last = True, shuffle = True)
 
     def forward(self):
         raise NotImplementedError
@@ -112,7 +133,8 @@ class SelfRewardingTrainer(Module):
         accelerate_kwargs: dict = dict(),
         checkpoints_folder: str = './checkpoints',
         sft_trainer_kwargs: dict = dict(),
-        dpo_trainer_kwargs: dict = dict()
+        dpo_trainer_kwargs: dict = dict(),
+        dropout = 0.1
     ):
         super().__init__()
         assert all([key in reward_prompt_config for key in reward_iteration_type]), f'reward prompt must be one of {reward_prompt_config.keys()}'
@@ -137,6 +159,7 @@ class SelfRewardingTrainer(Module):
 
         self.reward_generators = [RewardGenerator(model = model, reward_config = reward_config) for reward_config in self.reward_prompt_configs]
 
+        set_dropout_(model, dropout)
         self.dpo = DPO(model)
 
         self.dpo_trainer = DPOTrainer(

@@ -1,9 +1,10 @@
 from copy import deepcopy
 
 import torch
-from torch.nn import Module
+from torch.nn import Module, Dropout
 import torch.nn.functional as F
 from torch.cuda.amp import autocast
+from torch.optim.lr_scheduler import LinearLR
 from torch.utils.data import Dataset, DataLoader
 
 from accelerate import Accelerator
@@ -49,6 +50,35 @@ def maybe_and_mask(*masks):
         mask = mask & rest_mask
 
     return mask
+
+def set_dropout_(model: Module, prob: float):
+    for module in model.modules():
+        if isinstance(module, Dropout):
+            module.p = prob
+
+def adam_optimizer_with_linear_decay(
+    model: Module,
+    start_learning_rate: float,
+    end_learning_rate: float,
+    num_decay_steps: int,
+    weight_decay: float,
+    adam_kwargs: dict = dict(),
+) -> OptimizerWithWarmupSchedule:
+
+    adam = get_adam_optimizer(
+        model.get_parameters(),
+        lr = end_learning_rate,
+        wd = weight_decay
+    )
+
+    return OptimizerWithWarmupSchedule(
+        adam,
+        scheduler = LinearLR,
+        scheduler_kwargs = dict(
+            start_factor = start_learning_rate / end_learning_rate,
+            total_iters = num_decay_steps
+        )
+    )
 
 # main class
 
@@ -123,11 +153,32 @@ class DPOTrainer(Module):
         dpo: DPO,
         *,
         accelerator: Accelerator,
-        val_dataset: Dataset,
+        batch_size: int = 16,
+        learning_rate: float = 3e-4,
+        weight_decay: float = 0.,
+        val_dataset: Optional[Dataset] = None,
         start_learning_rate: float = 1e-6,
-        end_learning_rate: float = 1e-7
+        end_learning_rate: float = 1e-7,
+        adam_kwargs: dict = dict(),
+        dropout = 0.1
     ):
         super().__init__()
+        set_dropout_(dpo, dropout)
+
+        self.model = dpo
+        self.accelerator = accelerator
+
+        self.optimizer = adam_optimizer_with_linear_decay(
+            dpo,
+            start_learning_rate,
+            end_learning_rate,
+            weight_decay = weight_decay,
+            adam_kwargs = adam_kwargs
+        )
+
+        self.val_dataloader = None
+        if exists(val_dataset):
+            self.val_dataloader = DataLoader(val_dataset, batch_size = batch_size, drop_last = True, shuffle = True)
 
     def forward(
         self,
