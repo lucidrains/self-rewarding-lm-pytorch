@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pathlib import Path
 
 import torch
@@ -26,6 +27,9 @@ from accelerate import Accelerator
 
 def exists(v):
     return v is not None
+
+def default(v, d):
+    return v if exists(v) else d
 
 # constants
 # llm-as-judge prompt
@@ -136,18 +140,33 @@ class RewardGenerator(Module):
     @beartype
     def __init__(
         self,
+        model_generate_prompt: Module,
         model: Module,
+        num_preference_pairs: int,
         num_candidate_responses: int = 4,
-        temperature: float = 0.7,
-        nucleus_p: float = 0.9,
+        gen_temperature: float = 0.7,
+        gen_nucleus_p: float = 0.9,
+        eval_temperature: float = 0.7,
+        eval_nucleus_p: float = 0.9,
+        num_evals_to_average: int = 3,
         *,
-        reward_config: dict
+        reward_config: dict,
+        dataset_file_location: str = './dpo-train-set.memmap.npy'
     ):
         super().__init__()
         self.model = model
         self.num_candidate_responses = num_candidate_responses
-        self.nucleus_p = nucleus_p
-        self.temperature = temperature
+
+        self.num_preference_pairs = num_preference_pairs
+
+        self.gen_nucleus_p = gen_nucleus_p
+        self.gen_temperature = gen_temperature
+
+        self.eval_nucleus_p = eval_nucleus_p
+        self.eval_temperature = eval_temperature
+
+        self.num_evals_to_average = num_evals_to_average
+        self.dataset_file_location = dataset_file_location
 
     def forward(self) -> Dataset:
         raise NotImplementedError
@@ -166,11 +185,13 @@ class SelfRewardingTrainer(Module):
         self_reward_num_iterations = 2,
         reward_prompt_config: dict = REWARD_PROMPT_CONFIG,
         reward_iteration_type = ['default', 'default'],
+        num_preference_pairs: List[int] = [3964, 6942],
         reward_generator_kwargs: dict = dict(
             num_candidate_responses = 4,
             temperature = 0.7,
             nucleus_p = 0.9,
         ),
+        model_generate_prompt: Optional[Module] = None,
         early_stopper: Optional[EarlyStopper] = None,
         accelerate_kwargs: dict = dict(),
         sft_trainer_kwargs: dict = dict(),
@@ -180,6 +201,9 @@ class SelfRewardingTrainer(Module):
     ):
         super().__init__()
         assert all([key in reward_prompt_config for key in reward_iteration_type]), f'reward prompt must be one of {reward_prompt_config.keys()}'
+
+        if not exists(model_generate_prompt):
+            model_generate_prompt = deepcopy(model)
 
         self.reward_prompt_configs = [reward_prompt_config[key] for key in reward_iteration_type]
         self.self_reward_num_iterations = self_reward_num_iterations
@@ -199,7 +223,7 @@ class SelfRewardingTrainer(Module):
                 **sft_trainer_kwargs
             )
 
-        self.reward_generators = [RewardGenerator(model = model, reward_config = reward_config) for reward_config in self.reward_prompt_configs]
+        self.reward_generators = [RewardGenerator(model = model, model_generate_prompt = model_generate_prompt, reward_config = reward_config, num_preference_pairs = one_stage_num_preference_pairs) for reward_config, one_stage_num_preference_pairs in zip(self.reward_prompt_configs, num_preference_pairs)]
 
         set_dropout_(model, dropout)
         self.dpo = DPO(model)
