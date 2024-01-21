@@ -3,12 +3,12 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, ConcatDataset
 
 from numpy.lib.format import open_memmap
 
 from beartype import beartype
-from beartype.typing import Optional
+from beartype.typing import Optional, List
 
 from self_rewarding_lm_pytorch.dpo import (
     DPO,
@@ -74,7 +74,7 @@ class SFTTrainer(Module):
         model: Module,
         *,
         accelerator: Accelerator,
-        train_dataset: Dataset,
+        train_dataset: Union[List[Dataset], Dataset],
         val_dataset: Optional[Dataset] = None,
         batch_size: int = 16,
         start_learning_rate: float = 5.5e-6,
@@ -84,6 +84,9 @@ class SFTTrainer(Module):
     ):
         super().__init__()
         self.model = model
+
+        if isinstance(train_dataset, list):
+            train_dataset = ConcatDataset(train_dataset)
 
         self.optimizer = adam_optimizer_with_linear_decay(
             model,
@@ -124,7 +127,7 @@ class SelfRewardingTrainer(Module):
         self,
         model: Module,
         *,
-        train_sft_dataset: Optional[Dataset] = None,
+        train_sft_dataset: Optional[Union[List[Dataset], Dataset]] = None,
         valid_sft_dataset: Optional[Dataset] = None,
         beta = 0.1,
         self_reward_num_iterations = 2,
