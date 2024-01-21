@@ -151,7 +151,8 @@ class DPO(Module):
         self,
         model: Module,
         *,
-        beta = 0.1
+        beta = 0.1,
+        pad_id: Optional[int] = None
     ):
         super().__init__()
         self.policy_model = model
@@ -160,6 +161,7 @@ class DPO(Module):
         freeze_all_layers_(self.ref_model)
 
         self.beta = beta
+        self.pad_id = pad_id
 
     def update_reference_model_with_policy(self):
         self.ref_model.load_state_dict(self.policy_model.state_dict())
@@ -187,6 +189,15 @@ class DPO(Module):
         """
         Following Appendix B in https://arxiv.org/abs/2305.18290
         """
+
+        if exists(self.pad_id):
+            assert not exists(preferred_seq_mask)
+            assert not exists(unpreferred_seq_mask)
+            preferred_seq_mask = preferred_seq != self.pad_id
+            preferred_seq.masked_fill_(~preferred_seq_mask, 0)
+
+            unpreferred_seq_mask = unpreferred_seq != self.pad_id
+            unpreferred_seq.masked_fill_(~unpreferred_seq_mask, 0)            
 
         with torch.no_grad():
             self.ref_model.eval()
