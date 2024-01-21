@@ -99,6 +99,7 @@ class SFTTrainer(Module):
             model,
             start_learning_rate,
             end_learning_rate,
+            accelerator = accelerator,
             weight_decay = weight_decay,
             adam_kwargs = adam_kwargs
         )
