@@ -1,4 +1,5 @@
 from copy import deepcopy
+from collections import namedtuple
 
 import torch
 from torch.nn import Module, Dropout
@@ -10,7 +11,7 @@ from torch.utils.data import Dataset, DataLoader
 from accelerate import Accelerator
 
 from beartype import beartype
-from beartype.typing import Optional
+from beartype.typing import Optional, Callable
 
 from einx import get_at
 
@@ -61,24 +62,57 @@ def adam_optimizer_with_linear_decay(
     start_learning_rate: float,
     end_learning_rate: float,
     num_decay_steps: int,
+    accelerator: Accelerator,
     weight_decay: float,
     adam_kwargs: dict = dict(),
 ) -> OptimizerWithWarmupSchedule:
 
     adam = get_adam_optimizer(
-        model.get_parameters(),
-        lr = end_learning_rate,
+        model.parameters(),
+        lr = start_learning_rate,
         wd = weight_decay
     )
 
     return OptimizerWithWarmupSchedule(
-        adam,
+        optimizer = adam,
+        accelerator = accelerator,
         scheduler = LinearLR,
         scheduler_kwargs = dict(
-            start_factor = start_learning_rate / end_learning_rate,
+            start_factor = 1.,
+            end_factor = end_learning_rate / start_learning_rate,
             total_iters = num_decay_steps
         )
     )
+
+# early stopping
+
+EarlyStopperReturn = namedtuple('EarlyStopperReturn', ['should_stop', 'score'])
+
+class EarlyStopper(Module):
+    @beartype
+    def __init__(
+        self,
+        model: Module,
+        dataset: Dataset,
+        calculate_should_stop: Callable[..., bool] = lambda past_scores, score: len(past_scores) > 0 and score < past_scores[-1]
+    ):
+        super().__init__()
+        self.model = model
+        self.scores = []
+        self.calculate_should_stop = calculate_should_stop
+
+        self.val_dl = DataLoader(dataset, batch_size  = batch_size, shuffle = True, drop_last = True)
+
+    @torch.no_grad()
+    def forward(self) -> EarlyStopperReturn:
+        self.model.eval()
+
+        raise NotImplementedError
+
+        should_stop = self.calculate_should_stop(self.scores, score)
+        self.scores.append(score)
+
+        return EarlyStopperReturn(score, should_stop)
 
 # main class
 
@@ -146,6 +180,11 @@ class DPO(Module):
 
 # trainer class
 
+def cycle(dl):
+    while True:
+        for batch in dl:
+            yield batch
+
 class DPOTrainer(Module):
     @beartype
     def __init__(
@@ -154,34 +193,66 @@ class DPOTrainer(Module):
         *,
         accelerator: Accelerator,
         batch_size: int = 16,
+        num_decay_steps: int = 1000,
         learning_rate: float = 3e-4,
         weight_decay: float = 0.,
         val_dataset: Optional[Dataset] = None,
         start_learning_rate: float = 1e-6,
         end_learning_rate: float = 1e-7,
         adam_kwargs: dict = dict(),
-        dropout = 0.1
+        early_stopper: Optional[EarlyStopper] = None,
+        dropout: float = 0.1,
+        check_early_stop_every: int = 200
     ):
         super().__init__()
         set_dropout_(dpo, dropout)
 
-        self.model = dpo
         self.accelerator = accelerator
+        self.model = accelerator.prepare(dpo)
+
+        self.batch_size = batch_size
 
         self.optimizer = adam_optimizer_with_linear_decay(
             dpo,
             start_learning_rate,
             end_learning_rate,
+            num_decay_steps = num_decay_steps,
+            accelerator = accelerator,
             weight_decay = weight_decay,
             adam_kwargs = adam_kwargs
         )
+
+        self.early_stopper = early_stopper
+        self.check_early_stop_every = check_early_stop_every
 
         self.val_dataloader = None
         if exists(val_dataset):
             self.val_dataloader = DataLoader(val_dataset, batch_size = batch_size, drop_last = True, shuffle = True)
 
+        self.steps = 0
+
     def forward(
         self,
         train_self_reward_dataset: Dataset
     ):
+        train_dataloader = DataLoader(train_self_reward_dataset, batch_size = self.batch_size, drop_last = True, shuffle = True)
+        iter_dl = cycle(train_dataloader)
+
+        while True:
+            self.model.train()
+
+            batch = next(iter_dl)
+
+            dpo_loss = self.model(batch)
+            self.accelerator.backward(dpo_loss)
+
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+
+            self.steps += 1
+
+            if not (self.steps % self.check_early_stop_every):
+                if self.early_stopper():
+                    break
+
         raise NotImplementedError

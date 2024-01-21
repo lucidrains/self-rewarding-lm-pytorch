@@ -8,10 +8,12 @@ from torch.utils.data import Dataset, ConcatDataset
 from numpy.lib.format import open_memmap
 
 from beartype import beartype
-from beartype.typing import Optional, List
+from beartype.typing import Optional, List, Union
 
 from self_rewarding_lm_pytorch.dpo import (
     DPO,
+    EarlyStopper,
+    DPOTrainer,
     set_dropout_,
     adam_optimizer_with_linear_decay
 )
@@ -83,10 +85,15 @@ class SFTTrainer(Module):
         adam_kwargs: dict = dict()
     ):
         super().__init__()
+        self.accelerator = accelerator
         self.model = model
 
         if isinstance(train_dataset, list):
             train_dataset = ConcatDataset(train_dataset)
+
+        self.train_dataloader = DataLoader(train_dataset, batch_size = batch_size, drop_last = True, shuffle = True)
+
+        self.model, self.train_dataloader = self.accelerator.prepare(self.model, self.train_dataloader)
 
         self.optimizer = adam_optimizer_with_linear_decay(
             model,
@@ -105,16 +112,22 @@ class SFTTrainer(Module):
 
 # reward generator class
 
-
 class RewardGenerator(Module):
     @beartype
     def __init__(
         self,
         model: Module,
+        num_candidate_responses: int = 4,
+        temperature: float = 0.7,
+        nucleus_p: float = 0.9,
         *,
         reward_config: dict
     ):
-        raise NotImplementedError
+        super().__init__()
+        self.model = model
+        self.num_candidate_responses = num_candidate_responses
+        self.nucleus_p = nucleus_p
+        self.temperature = temperature
 
     def forward(self) -> Dataset:
         raise NotImplementedError
@@ -133,11 +146,17 @@ class SelfRewardingTrainer(Module):
         self_reward_num_iterations = 2,
         reward_prompt_config: dict = REWARD_PROMPT_CONFIG,
         reward_iteration_type = ['default', 'default'],
+        reward_generator_kwargs: dict = dict(
+            num_candidate_responses = 4,
+            temperature = 0.7,
+            nucleus_p = 0.9,
+        ),
+        early_stopper: Optional[EarlyStopper] = None,
         accelerate_kwargs: dict = dict(),
-        checkpoints_folder: str = './checkpoints',
         sft_trainer_kwargs: dict = dict(),
         dpo_trainer_kwargs: dict = dict(),
-        dropout = 0.1
+        dropout = 0.1,
+        checkpoints_folder: str = './checkpoints'
     ):
         super().__init__()
         assert all([key in reward_prompt_config for key in reward_iteration_type]), f'reward prompt must be one of {reward_prompt_config.keys()}'
