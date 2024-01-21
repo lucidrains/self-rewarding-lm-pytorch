@@ -281,8 +281,12 @@ class DPOTrainer(Module):
 
             self.steps += 1
 
+            self.accelerator.wait_for_everyone()
+
             if not (self.steps % self.check_early_stop_every):
                 if self.early_stopper():
                     break
+
+            self.accelerator.wait_for_everyone()
 
         raise NotImplementedError
