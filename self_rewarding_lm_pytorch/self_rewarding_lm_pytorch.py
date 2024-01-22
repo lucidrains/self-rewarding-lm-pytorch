@@ -23,7 +23,11 @@ from einops import rearrange
 
 from accelerate import Accelerator
 
-from pytorch_custom_utils import pad_or_slice_to
+from pytorch_custom_utils.utils import pad_or_slice_to
+
+from torchtyping import TensorType
+
+from x_transformers.autoregressive_wrapper import AutoregressiveWrapper
 
 # helper
 
@@ -64,12 +68,20 @@ necessary. To evaluate the response in alignment with this additive scoring mode
 systematically attribute points based on the outlined criteria.
 """
 
+def default_parse_reward_fn(llm_response: str):
+    result = re.search(r"Score: ([0-9\.]+)", a)
+    if result.groups == 0:
+        return None
+
+    return result.groups(1)
+
 # config, allowing for different types of reward prompting
 # colocate with functions for extracting the response and reward
 
 REWARD_PROMPT_CONFIG = dict(
     default = dict(
-        prompt = DEFAULT_LLM_AS_JUDGE_PROMPT
+        prompt = DEFAULT_LLM_AS_JUDGE_PROMPT,
+        parse_reward = default_reward_extractor_fn
     )
 )
 
@@ -145,6 +157,9 @@ class RewardGenerator(Module):
         model_generate_prompt: Module,
         model: Module,
         num_preference_pairs: int,
+        tokenizer_encode: Callable[[str], TensorType['seq_len', int]],
+        tokenizer_decode: Callable[[TensorType['seq_len', int]], str],
+        batch_size: int = 16,
         num_candidate_responses: int = 4,
         gen_temperature: float = 0.7,
         gen_nucleus_p: float = 0.9,
@@ -158,10 +173,12 @@ class RewardGenerator(Module):
         pad_id: int = -1
     ):
         super().__init__()
+        self.model_generate_prompt = model_generate_prompt
+
         self.model = model
         self.num_candidate_responses = num_candidate_responses
 
-        self.num_preference_pairs = num_preference_pairs
+        self.batch_size = batch_size
 
         self.gen_nucleus_p = gen_nucleus_p
         self.gen_temperature = gen_temperature
@@ -169,13 +186,23 @@ class RewardGenerator(Module):
         self.eval_nucleus_p = eval_nucleus_p
         self.eval_temperature = eval_temperature
 
+        self.tokenizer_encode = tokenizer_encode
+        self.tokenizer_decode = tokenizer_decode
+
         self.num_evals_to_average = num_evals_to_average
 
+        self.num_preference_pairs = num_preference_pairs
         self.dataset_file_location = dataset_file_location
         self.pad_id = pad_id
 
+        memmap_shape = (num_preference_pairs, 2, preference_max_seq_len)
+        self.dpo_preference_dataset = open_memmap(dataset_file_location, dtype = 'int', mode = 'w+', shape = memmap_shape)
+
     def forward(self) -> Dataset:
+
         raise NotImplementedError
+
+        self.dpo_preference_dataset.flush()
 
 # fine tuning class
 

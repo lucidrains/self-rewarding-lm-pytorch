@@ -23,6 +23,7 @@ setup(
     'einx',
     'numpy',
     'pytorch-custom-utils>=0.0.12',
+    'x-transformers',
     'torch>=2.0',
     'torchtyping'
   ],
