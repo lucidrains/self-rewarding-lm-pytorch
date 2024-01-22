@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch.cuda.amp import autocast
 from torch.optim.lr_scheduler import LinearLR
 from torch.utils.data import Dataset, DataLoader
+import torch.distributed as dist
 
 from accelerate import Accelerator
 
@@ -263,7 +264,10 @@ class DPOTrainer(Module):
             adam_kwargs = adam_kwargs
         )
 
-        self.early_stopper = early_stopper
+        self.early_stopper = None
+        if self.is_main:
+            self.early_stopper = early_stopper
+
         self.check_early_stop_every = check_early_stop_every
 
         self.val_dataloader = None
@@ -271,6 +275,11 @@ class DPOTrainer(Module):
             self.val_dataloader = DataLoader(val_dataset, batch_size = batch_size, drop_last = True, shuffle = True)
 
         self.steps = 0
+        self.register_buffer('break_signal', torch.tensor(0.))
+
+    @property
+    def is_main(self):
+        return self.accelerator.is_main_process
 
     def forward(
         self,
@@ -295,7 +304,12 @@ class DPOTrainer(Module):
             self.accelerator.wait_for_everyone()
 
             if not (self.steps % self.check_early_stop_every):
-                if self.early_stopper():
+
+                if self.is_main and self.early_stopper():
+                    self.break_signal.copy_(1.)
+                    dist.all_reduce(self.break_signal)
+
+                if self.break_signal.item() == 1:
                     break
 
             self.accelerator.wait_for_everyone()
