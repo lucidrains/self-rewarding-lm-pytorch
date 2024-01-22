@@ -1,5 +1,6 @@
 from copy import deepcopy
 from pathlib import Path
+from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -9,7 +10,7 @@ from torch.utils.data import Dataset, ConcatDataset
 from numpy.lib.format import open_memmap
 
 from beartype import beartype
-from beartype.typing import Optional, List, Union, Callable
+from beartype.typing import Optional, Dict, List, Union, Callable
 
 from self_rewarding_lm_pytorch.dpo import (
     DPO,
@@ -83,11 +84,19 @@ User: {instruction}
 <response>{response}</response>
 """
 
+# reward config
+
+@dataclass
+class RewardConfig:
+    prompt: str
+    parse_reward: Callable[[str], Optional[float]]
+    construct_reward_prompt: Callable[[str, str], str]
+
 # config, allowing for different types of reward prompting
 # colocate with functions for extracting the response and reward
 
 REWARD_PROMPT_CONFIG = dict(
-    default = dict(
+    default = RewardConfig(
         prompt = DEFAULT_LLM_AS_JUDGE_PROMPT,
         parse_reward = default_parse_reward_fn,
         construct_reward_prompt = default_construct_reward_prompt
@@ -176,7 +185,7 @@ class RewardGenerator(Module):
         eval_nucleus_p: float = 0.9,
         num_evals_to_average: int = 3,
         *,
-        reward_config: dict,
+        reward_config: RewardConfig,
         preference_seq_memmap_file: str,
         prompt_len_memmap_file: str,
         preference_max_seq_len: int = 4096,
@@ -278,7 +287,7 @@ class SelfRewardingTrainer(Module):
         valid_sft_dataset: Optional[Dataset] = None,
         beta = 0.1,
         self_reward_num_iterations = 2,
-        reward_prompt_config: dict = REWARD_PROMPT_CONFIG,
+        reward_prompt_config: Dict[str, RewardConfig] = REWARD_PROMPT_CONFIG,
         reward_iteration_type = ['default', 'default'],
         num_preference_pairs: List[int] = [3964, 6942],
         reward_generator_kwargs: dict = dict(

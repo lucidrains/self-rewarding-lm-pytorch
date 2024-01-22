@@ -1,5 +1,6 @@
 from copy import deepcopy
 from collections import namedtuple
+from dataclasses import dataclass
 
 import torch
 from torch.nn import Module, Dropout
@@ -87,7 +88,10 @@ def adam_optimizer_with_linear_decay(
 
 # early stopping
 
-EarlyStopperReturn = namedtuple('EarlyStopperReturn', ['should_stop', 'score'])
+@dataclass
+class EarlyStopperReturn:
+    should_stop: bool
+    score: float
 
 class EarlyStopper(Module):
     @beartype
