@@ -9,10 +9,11 @@ from torch.utils.data import Dataset, ConcatDataset
 from numpy.lib.format import open_memmap
 
 from beartype import beartype
-from beartype.typing import Optional, List, Union
+from beartype.typing import Optional, List, Union, Callable
 
 from self_rewarding_lm_pytorch.dpo import (
     DPO,
+    DPODataset,
     EarlyStopper,
     DPOTrainer,
     set_dropout_,
@@ -75,13 +76,21 @@ def default_parse_reward_fn(llm_response: str):
 
     return result.groups(1)
 
+def default_construct_reward_prompt(instruction: str, response: str):
+    return f"""
+
+User: {instruction}
+<response>{response}</response>
+"""
+
 # config, allowing for different types of reward prompting
 # colocate with functions for extracting the response and reward
 
 REWARD_PROMPT_CONFIG = dict(
     default = dict(
         prompt = DEFAULT_LLM_AS_JUDGE_PROMPT,
-        parse_reward = default_reward_extractor_fn
+        parse_reward = default_parse_reward_fn,
+        construct_reward_prompt = default_construct_reward_prompt
     )
 )
 
@@ -178,6 +187,7 @@ class RewardGenerator(Module):
 
         self.model = model
         self.num_candidate_responses = num_candidate_responses
+        self.reward_config = reward_config
 
         self.batch_size = batch_size
 
@@ -206,12 +216,55 @@ class RewardGenerator(Module):
         self.preference_seq_memmap = open_memmap(preference_seq_memmap_file, dtype = 'int', mode = 'w+', shape = memmap_shape)
         self.prompt_len_memmap = open_memmap(prompt_len_memmap, dtype = 'int', mode = 'w+', shape = (num_preference_pairs,))
 
-    def forward(self) -> Dataset:
+    def generate_reward(
+        self,
+        prompt: str,
+        response: str
+    ) -> float:
+
+        """
+        main contribution of the paper is the logic in this function
+        in paper, they sample it 4 times and then average
+        """
+
+        device = next(self.model.parameters()).device
+
+        parse_reward = self.reward_config['parse_reward']
+        reward_base_prompt_str = self.reward_config['prompt']
+        construct_reward_prompt = self.reward_config['construct_reward_prompt']
+
+        reward_prompt = reward_base_prompt_str + construct_reward_prompt(prompt, response)
+        reward_prompt = self.tokenizer_encode(reward_prompt_str).to(device)
+
+        reward_prompt = repeat(reward_prompt, 'n -> b n', b = self.num_evals_to_average)
+
+        wrapped_model = AutoregressiveWrapper(self.model)
+
+        reward_responses = wrapped_model.generate(
+            prompt = reward_prompt,
+            temperature = self.eval_temperature,
+            filter_kwargs = dict(
+                thres = self.eval_nucleus_p
+            )
+        )
+
+        reward_responses_as_str: List[str] = [self.tokenizer_decode(resp[resp != self.pad_id].cpu()) for resp in reward_responses]
+        rewards: List[Optional[float]] = [parse_reward(resp_str) for resp_str in reward_responses_as_str]
+
+        rewards = [*filter(exists, rewards)] # for now, just filter out any failed responses
+
+        avg_reward = Tensor(rewards).mean()
+        return avg_reward
+
+    def forward(self) -> DPODataset:
 
         raise NotImplementedError
 
         self.prompt_len_memmap.flush()
         self.preference_seq_memmap.flush()
+
+        dpo_dataset = DPODataset(self.preference_seq_memmap_file, self.prompt_len_memmap_file)
+        return dpo_dataset
 
 # fine tuning class
 
@@ -230,8 +283,10 @@ class SelfRewardingTrainer(Module):
         num_preference_pairs: List[int] = [3964, 6942],
         reward_generator_kwargs: dict = dict(
             num_candidate_responses = 4,
-            temperature = 0.7,
-            nucleus_p = 0.9,
+            gen_temperature = 0.7,
+            gen_nucleus_p = 0.9,
+            eval_temperature = 0.7,
+            eval_nucleus_p = 0.9
         ),
         model_generate_prompt: Optional[Module] = None,
         early_stopper: Optional[EarlyStopper] = None,
@@ -265,7 +320,7 @@ class SelfRewardingTrainer(Module):
                 **sft_trainer_kwargs
             )
 
-        self.reward_generators = [RewardGenerator(model = model, model_generate_prompt = model_generate_prompt, reward_config = reward_config, num_preference_pairs = one_stage_num_preference_pairs) for reward_config, one_stage_num_preference_pairs in zip(self.reward_prompt_configs, num_preference_pairs)]
+        self.reward_generators = [RewardGenerator(model = model, model_generate_prompt = model_generate_prompt, reward_config = reward_config, num_preference_pairs = one_stage_num_preference_pairs, **reward_generator_kwargs) for reward_config, one_stage_num_preference_pairs in zip(self.reward_prompt_configs, num_preference_pairs)]
 
         set_dropout_(model, dropout)
         self.dpo = DPO(model)
