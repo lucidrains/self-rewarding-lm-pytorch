@@ -168,7 +168,8 @@ class RewardGenerator(Module):
         num_evals_to_average: int = 3,
         *,
         reward_config: dict,
-        dataset_file_location: str = './dpo-train-set.memmap.npy',
+        preference_seq_memmap_file: str,
+        prompt_len_memmap_file: str,
         preference_max_seq_len: int = 4096,
         pad_id: int = -1
     ):
@@ -192,17 +193,25 @@ class RewardGenerator(Module):
         self.num_evals_to_average = num_evals_to_average
 
         self.num_preference_pairs = num_preference_pairs
-        self.dataset_file_location = dataset_file_location
+
+        self.preference_seq_memmap_file = preference_seq_memmap_file
+        self.prompt_len_memmap_file = prompt_len_memmap_file
+
+        self.preference_max_seq_len = preference_max_seq_len
+
         self.pad_id = pad_id
 
         memmap_shape = (num_preference_pairs, 2, preference_max_seq_len)
-        self.dpo_preference_dataset = open_memmap(dataset_file_location, dtype = 'int', mode = 'w+', shape = memmap_shape)
+
+        self.preference_seq_memmap = open_memmap(preference_seq_memmap_file, dtype = 'int', mode = 'w+', shape = memmap_shape)
+        self.prompt_len_memmap = open_memmap(prompt_len_memmap, dtype = 'int', mode = 'w+', shape = (num_preference_pairs,))
 
     def forward(self) -> Dataset:
 
         raise NotImplementedError
 
-        self.dpo_preference_dataset.flush()
+        self.prompt_len_memmap.flush()
+        self.preference_seq_memmap.flush()
 
 # fine tuning class
 

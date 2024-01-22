@@ -145,6 +145,38 @@ class EarlyStopper(Module):
 
         return EarlyStopperReturn(score, should_stop)
 
+# dataset from two memmap numpy file
+
+# preferred and unpreferred sequences of shape - (<num samples>, <preference (2) - preferred followed by unpreferred>, <seq length>)
+# prompt length (<num samples>,)
+
+class DPODataset(Dataset):
+    def __init__(
+        self,
+        preference_seq_memmap_file: str,
+        prompt_len_memmap_file: str
+    ):
+        assert Path(preference_seq_memmap_file).exists()
+        assert Path(prompt_len_memmap_file).exists()
+
+        self.paired_sequences = open_memmap(preference_seq_memmap_file, dtype = 'int', mode = 'r')
+        self.prompt_len = open_memmap(prompt_len_memmap_file, dtype = 'int', mode = 'r')
+
+        self.seq_len = self.paired_sequences.shape[1]
+        assert self.paired_sequences.shape[0] == self.prompt_len == [0]
+
+    def __len__(self):
+        return self.paired_sequences.shape[0]
+
+    def __getitem__(self, idx):
+        sequences = self.paired_sequences[idx]
+        prompt_lens = self.prompt_len[idx]
+
+        preferred_seq, unpreferred_seq = self.paired_sequences.unbind(dim = 1)
+        prompt_mask = torch.arange(self.seq_len)[None, :] < prompt_lens
+
+        return preferred_seq, unpreferred_seq, prompt_mask
+
 # main class
 
 class DPO(Module):
