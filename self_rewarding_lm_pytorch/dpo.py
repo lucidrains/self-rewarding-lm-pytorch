@@ -177,9 +177,8 @@ class DPODataset(Dataset):
         prompt_lens = self.prompt_len[idx]
 
         preferred_seq, unpreferred_seq = self.paired_sequences.unbind(dim = 1)
-        prompt_mask = torch.arange(self.seq_len)[None, :] < prompt_lens
 
-        return preferred_seq, unpreferred_seq, prompt_mask
+        return preferred_seq, unpreferred_seq, prompt_lens
 
 # main class
 
@@ -206,11 +205,16 @@ class DPO(Module):
     def parameters(self):
         return self.policy_model.parameters()
 
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
     @autocast(enabled = False)
     def forward(
         self,
         preferred_seq: TensorType['b', 'n', int],
         unpreferred_seq: TensorType['b', 'n', int],
+        prompt_len: Optional[TensorType['b', int]] = None,
         prompt_mask: Optional[TensorType['b', 'n', bool]] = None,
         preferred_seq_mask: Optional[TensorType['b', 'n', bool]] = None,
         unpreferred_seq_mask: Optional[TensorType['b', 'n', bool]] = None
@@ -222,6 +226,11 @@ class DPO(Module):
 
         assert preferred_seq.ndim == 2
         assert preferred_seq.shape == unpreferred_seq.shape
+        seq_len = preferred_seq.shape[-1]
+
+        if exists(prompt_len):
+            assert not exists(prompt_mask)
+            prompt_mask = torch.arange(seq_len, device = self.device) < prompt_len[:, None]
 
         """
         Following Appendix B in https://arxiv.org/abs/2305.18290
