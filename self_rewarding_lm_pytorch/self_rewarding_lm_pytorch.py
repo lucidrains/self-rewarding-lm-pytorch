@@ -23,6 +23,8 @@ from einops import rearrange
 
 from accelerate import Accelerator
 
+from pytorch_custom_utils import pad_or_slice_to
+
 # helper
 
 def exists(v):
@@ -151,7 +153,9 @@ class RewardGenerator(Module):
         num_evals_to_average: int = 3,
         *,
         reward_config: dict,
-        dataset_file_location: str = './dpo-train-set.memmap.npy'
+        dataset_file_location: str = './dpo-train-set.memmap.npy',
+        preference_max_seq_len: int = 4096,
+        pad_id: int = -1
     ):
         super().__init__()
         self.model = model
@@ -166,7 +170,9 @@ class RewardGenerator(Module):
         self.eval_temperature = eval_temperature
 
         self.num_evals_to_average = num_evals_to_average
+
         self.dataset_file_location = dataset_file_location
+        self.pad_id = pad_id
 
     def forward(self) -> Dataset:
         raise NotImplementedError
