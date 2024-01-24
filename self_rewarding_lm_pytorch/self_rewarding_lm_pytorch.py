@@ -34,7 +34,7 @@ from x_transformers.autoregressive_wrapper import AutoregressiveWrapper
 # basic templating engine
 
 import jinja2
-jinja2_environment = jinja2.Environment()
+jinja2_env = jinja2.Environment()
 
 # helper
 
@@ -198,7 +198,9 @@ class RewardGenerator(Module):
 
         self.reward_config = reward_config
         prompt_template = reward_config['prompt_template']
-        self.reward_config['template_fn'] = jinja2_environment.from_string().render
+        assert jinja2.meta.find_undeclared_variables(jinja2_env.parse(prompt_template)) == {'prompt', 'response'}, 'template must include prompt and response templating variables'
+
+        self.reward_config['template_fn'] = jinja2_env.from_string(prompt_template).render
 
         self.batch_size = batch_size
 
