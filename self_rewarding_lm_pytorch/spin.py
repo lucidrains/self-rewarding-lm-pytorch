@@ -157,18 +157,20 @@ class SPINTrainer(Module):
         self.train_dataloader = DataLoader(sft_dataset, batch_size = batch_size, shuffle = True, drop_last = True)
 
         self.optimizer = OptimizerWithWarmupSchedule(
-            get_adam_optimizer(lr = learning_rate, wd = weight_decay),
+            get_adam_optimizer(
+                model.parameters(),
+                lr = learning_rate,
+                wd = weight_decay
+            ),
             accelerator = self.accelerator
         )
 
         (
             self.model,
-            self.train_dataloader,
-            self.optimizer
+            self.train_dataloader
         ) = self.accelerator.prepare(
             self.model,
-            self.train_dataloader,
-            self.optimizer
+            self.train_dataloade
         )
 
         self.temperature = temperature

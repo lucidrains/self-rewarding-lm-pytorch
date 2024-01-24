@@ -331,6 +331,8 @@ class DPOTrainer(Module):
         train_self_reward_dataset: Dataset
     ):
         train_dataloader = DataLoader(train_self_reward_dataset, batch_size = self.batch_size, drop_last = True, shuffle = True)
+        train_dataloader = self.accelerator.prepare(train_dataloader)
+
         iter_dl = cycle(train_dataloader)
 
         while True:
