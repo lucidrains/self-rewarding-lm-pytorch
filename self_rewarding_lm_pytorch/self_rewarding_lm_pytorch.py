@@ -31,6 +31,11 @@ from torchtyping import TensorType
 
 from x_transformers.autoregressive_wrapper import AutoregressiveWrapper
 
+# basic templating engine
+
+import jinja2
+jinja2_environment = jinja2.Environment()
+
 # helper
 
 def exists(v):
@@ -60,8 +65,8 @@ helpful, even if there is slight room for improvement in clarity, conciseness or
 - Bestow a fifth point for a response that is impeccably tailored to the user’s question
 by an AI Assistant, without extraneous information, reflecting expert knowledge, and
 demonstrating a high-quality, engaging, and insightful answer.
-User: <INSTRUCTION_HERE>
-<response><RESPONSE_HERE></response>
+User: {{ prompt }}
+<response>{{ response }}</response>
 After examining the user’s instruction and the response:
 - Briefly justify your total score, up to 100 words.
 - Conclude with the score using the format: “Score: <total points>”
@@ -77,29 +82,21 @@ def default_parse_reward_fn(llm_response: str):
 
     return result.groups(1)
 
-def default_construct_reward_prompt(instruction: str, response: str):
-    return f"""
-
-User: {instruction}
-<response>{response}</response>
-"""
-
 # reward config
 
 @dataclass
 class RewardConfig:
-    prompt: str
+    prompt_template: str
     parse_reward: Callable[[str], Optional[float]]
-    construct_reward_prompt: Callable[[str, str], str]
+    render: Optional[Callable[..., str]] = None
 
 # config, allowing for different types of reward prompting
 # colocate with functions for extracting the response and reward
 
 REWARD_PROMPT_CONFIG = dict(
     default = RewardConfig(
-        prompt = DEFAULT_LLM_AS_JUDGE_PROMPT,
-        parse_reward = default_parse_reward_fn,
-        construct_reward_prompt = default_construct_reward_prompt
+        prompt_template = DEFAULT_LLM_AS_JUDGE_PROMPT,
+        parse_reward = default_parse_reward_fn
     )
 )
 
@@ -198,7 +195,10 @@ class RewardGenerator(Module):
 
         self.model = model
         self.num_candidate_responses = num_candidate_responses
+
         self.reward_config = reward_config
+        prompt_template = reward_config['prompt_template']
+        self.reward_config['template_fn'] = jinja2_environment.from_string().render
 
         self.batch_size = batch_size
 
@@ -240,11 +240,10 @@ class RewardGenerator(Module):
 
         device = next(self.model.parameters()).device
 
+        template_fn = self.reward_config['template_fn']
         parse_reward = self.reward_config['parse_reward']
-        reward_base_prompt_str = self.reward_config['prompt']
-        construct_reward_prompt = self.reward_config['construct_reward_prompt']
 
-        reward_prompt = reward_base_prompt_str + construct_reward_prompt(prompt, response)
+        reward_prompt = template_fn(prompt, response)
         reward_prompt = self.tokenizer_encode(reward_prompt_str).to(device)
 
         reward_prompt = repeat(reward_prompt, 'n -> b n', b = self.num_evals_to_average)
