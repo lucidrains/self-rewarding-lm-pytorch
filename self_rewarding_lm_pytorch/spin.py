@@ -5,6 +5,7 @@ from torch.nn import Module
 import torch.nn.functional as F
 from torch.cuda.amp import autocast
 from torch.utils.data import Dataset
+from torch.nn.utils.rnn import pad_sequence
 
 from beartype import beartype
 from beartype.typing import Optional, Callable
@@ -12,6 +13,15 @@ from beartype.typing import Optional, Callable
 from einx import get_at
 
 from torchtyping import TensorType
+
+from accelerate import Accelerator
+
+from x_transformers.autoregressive_wrapper import AutoregressiveWrapper
+
+from pytorch_custom_utils import (
+    get_adam_optimizer,
+    OptimizerWithWarmupSchedule
+)
 
 # helper functions
 
@@ -124,6 +134,89 @@ class SPINTrainer(Module):
     def __init__(
         self,
         model: Module,
-        sft_dataset: Dataset
+        sft_dataset: Dataset,
+        accelerator: Accelerator,
+        accelerator_kwargs: dict = dict(),
+        batch_size = 16,
+        epochs = 2,
+        learning_rate = 3e-4,
+        weight_decay = 0.,
+        temperature = 0.7,
+        nucleus_p = 0.9,
+        pad_id: int = -1,
+        spin_λ = 0.1
     ):
-        raise NotImplementedError
+        super().__init__()
+
+        self.accelerator = accelerator
+        if not exists(self.accelerator):
+            self.accelerator = Accelerator(**accelerator_kwargs)
+
+        self.model = model
+        self.epochs = epochs
+        self.train_dataloader = DataLoader(sft_dataset, batch_size = batch_size, shuffle = True, drop_last = True)
+
+        self.optimizer = OptimizerWithWarmupSchedule(
+            get_adam_optimizer(lr = learning_rate, wd = weight_decay),
+            accelerator = self.accelerator
+        )
+
+        (
+            self.model,
+            self.train_dataloader,
+            self.optimizer
+        ) = self.accelerator.prepare(
+            self.model,
+            self.train_dataloader,
+            self.optimizer
+        )
+
+        self.temperature = temperature
+        self.nucleus_p = nucleus_p
+        self.pad_id = pad_id
+
+        self.spin_λ = spin_λ
+
+    def forward(self):
+        """
+        Algorithm 1 - https://arxiv.org/abs/2401.01335v1
+        """
+
+        wrapped_model = AutoregressiveWrapper(self.model)
+
+        spin = SPIN(
+            self.model,
+            pad_id = self.pad_id,
+            λ = self.spin_λ
+        )
+
+        for epoch in self.epochs:
+            for real_seq, prompt_mask in self.train_dataloader:
+                prompts = [one_real_seq[one_prompt_mask] for one_real_seq, one_prompt_mask in zip(real_seq, prompt_mask)]
+
+                generated_seqs = []
+                for prompt in prompts:
+                    one_generated_seq = wrapped_model.generate(
+                        prompt = prompt,
+                        temperature = self.temperature,
+                        filter_kwargs = dict(
+                            thres = self.nucleus_p
+                        )
+                    )
+
+                    generated_seqs.append(torch.cat((prompt, generated_seq), dim = -1))
+
+                generated_seqs = pad_sequence(generated_seqs, padding_value = self.pad_id, batch_first = True)
+
+                spin_loss = spin(
+                    real_seq = real_seq,
+                    generated_seq = generated_seqs,
+                    prompt_mask = prompt_mask
+                )
+
+                self.accelerator.backwards(spin_loss)
+
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+
+        print(f'self-play training complete')

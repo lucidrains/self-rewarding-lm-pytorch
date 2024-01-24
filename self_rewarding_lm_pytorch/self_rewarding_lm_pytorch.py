@@ -151,8 +151,10 @@ class SFTTrainer(Module):
 
     def forward(self):
         for epoch in self.num_epochs:
-            for seq in self.train_dataloader:
+            for seq, prompt_mask in self.train_dataloader:
                 seq, labels = seq[: :-1], seq[:, 1:]
+
+                labels.masked_fill_(prompt_mask[:, 1:], self.ignore_index)
 
                 logits = self.model(seq)
 
