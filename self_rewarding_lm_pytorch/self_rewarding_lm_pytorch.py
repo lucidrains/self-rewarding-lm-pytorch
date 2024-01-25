@@ -560,7 +560,8 @@ class SelfRewardingTrainer(Module):
             self.spin_trainer = SPINTrainer(
                 model,
                 accelerator = self.accelerator,
-                sft_dataset = self.train_sft_dataset,
+                sft_dataset = train_sft_dataset,
+                max_seq_len = spin_trainer_kwargs.pop('max_seq_len', preference_max_seq_len),
                 **spin_trainer_kwargs
             )
 

@@ -8,7 +8,7 @@ import torch
 from torch.nn import Module
 import torch.nn.functional as F
 from torch.cuda.amp import autocast
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
 from accelerate import Accelerator
@@ -25,6 +25,8 @@ from self_rewarding_lm_pytorch.sampling_utils import (
     top_p,
     top_k
 )
+
+from tqdm import tqdm
 
 # helper functions
 
@@ -97,8 +99,15 @@ class SPIN(Module):
         n - sequence length
         """
 
+        real_seq_len = real_seq.shape[-1]
+        generated_seq_len = generated_seq.shape[-1]
+        min_seq_len = min(real_seq_len, generated_seq_len)
+
+        generated_seq, real_seq, prompt_mask = map(lambda t: t[..., :min_seq_len], (generated_seq, real_seq, prompt_mask))
+
         assert generated_seq.ndim == 2
         assert generated_seq.shape == real_seq.shape
+
         seq_len = generated_seq.shape[-1]
 
         if exists(prompt_len):
@@ -141,6 +150,7 @@ class SPINTrainer(Module):
         model: Module,
         sft_dataset: Dataset,
         accelerator: Accelerator,
+        max_seq_len: int,
         accelerator_kwargs: dict = dict(),
         batch_size = 16,
         epochs = 2,
@@ -162,7 +172,7 @@ class SPINTrainer(Module):
         self.train_dataloader = DataLoader(sft_dataset, batch_size = batch_size, shuffle = True, drop_last = True)
 
         self.optimizer = OptimizerWithWarmupSchedule(
-            get_adam_optimizer(
+            optimizer = get_adam_optimizer(
                 model.parameters(),
                 lr = learning_rate,
                 wd = weight_decay
@@ -175,9 +185,10 @@ class SPINTrainer(Module):
             self.train_dataloader
         ) = self.accelerator.prepare(
             self.model,
-            self.train_dataloade
+            self.train_dataloader
         )
 
+        self.max_seq_len = max_seq_len
         self.temperature = temperature
         self.nucleus_p = nucleus_p
         self.pad_id = pad_id
@@ -189,14 +200,22 @@ class SPINTrainer(Module):
         Algorithm 1 - https://arxiv.org/abs/2401.01335v1
         """
 
+        self.model.train()
+
         spin = SPIN(
             self.model,
             pad_id = self.pad_id,
             λ = self.spin_λ
         )
 
-        for epoch in self.epochs:
-            for real_seq, prompt_mask in self.train_dataloader:
+        for epoch in tqdm(range(self.epochs)):
+            for real_seq, prompt_len_or_mask in self.train_dataloader:
+
+                if prompt_len_or_mask.dtype == torch.long:
+                    prompt_mask = torch.arange(real_seq.shape[-1], device = real_seq.device) < prompt_len_or_mask[..., None]
+                else:
+                    prompt_mask = prompt_len_or_mask
+
                 prompts = [one_real_seq[one_prompt_mask] for one_real_seq, one_prompt_mask in zip(real_seq, prompt_mask)]
 
                 generated_seqs = []
@@ -204,15 +223,17 @@ class SPINTrainer(Module):
                 for prompt in prompts:
                     one_generated_seq = sample(
                         self.model,
-                        prompt = prompt,
+                        prompt = rearrange(prompt, '... -> 1 ...'),
+                        seq_len = self.max_seq_len,
                         temperature = self.temperature,
-                        filter_function = top_p,
+                        filter_fn = top_p,
                         filter_kwargs = dict(
                             thres = self.nucleus_p
                         )
                     )
 
-                    generated_seqs.append(torch.cat((prompt, generated_seq), dim = -1))
+                    one_generated_seq = rearrange(one_generated_seq, '1 ... -> ...')
+                    generated_seqs.append(torch.cat((prompt, one_generated_seq), dim = -1))
 
                 generated_seqs = pad_sequence(generated_seqs, padding_value = self.pad_id, batch_first = True)
 
