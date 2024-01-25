@@ -1,5 +1,9 @@
 from copy import deepcopy
 
+from beartype import beartype
+from beartype.typing import Optional, Callable
+from torchtyping import TensorType
+
 import torch
 from torch.nn import Module
 import torch.nn.functional as F
@@ -7,20 +11,17 @@ from torch.cuda.amp import autocast
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 
-from beartype import beartype
-from beartype.typing import Optional, Callable
-
-from einx import get_at
-
-from torchtyping import TensorType
-
 from accelerate import Accelerator
-
-from x_transformers.autoregressive_wrapper import AutoregressiveWrapper
 
 from pytorch_custom_utils import (
     get_adam_optimizer,
     OptimizerWithWarmupSchedule
+)
+
+from self_rewarding_lm_pytorch.sampling_utils import (
+    sample,
+    top_p,
+    top_k
 )
 
 # helper functions
@@ -34,8 +35,10 @@ def freeze_all_layers_(module):
 
 def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     logits = model(seq)
-    prob = logits.softmax(dim = -1)
-    return get_at('b n [c], b n -> b n', prob, indices).clamp(min = eps).log()
+    probs = logits.softmax(dim = -1)
+    probs = rearrange(probs, '... -> ... 1')
+    logprobs = probs.gather(-1, indices).clamp(min = eps).log()
+    return rearrange(logprobs, '... 1 -> ...')
 
 def maybe_and_mask(*masks):
     masks = [*filter(exists, masks)]
@@ -184,8 +187,6 @@ class SPINTrainer(Module):
         Algorithm 1 - https://arxiv.org/abs/2401.01335v1
         """
 
-        wrapped_model = AutoregressiveWrapper(self.model)
-
         spin = SPIN(
             self.model,
             pad_id = self.pad_id,
@@ -197,10 +198,13 @@ class SPINTrainer(Module):
                 prompts = [one_real_seq[one_prompt_mask] for one_real_seq, one_prompt_mask in zip(real_seq, prompt_mask)]
 
                 generated_seqs = []
+
                 for prompt in prompts:
-                    one_generated_seq = wrapped_model.generate(
+                    one_generated_seq = sample(
+                        self.model,
                         prompt = prompt,
                         temperature = self.temperature,
+                        filter_function = top_p,
                         filter_kwargs = dict(
                             thres = self.nucleus_p
                         )

@@ -2,6 +2,10 @@ from copy import deepcopy
 from collections import namedtuple
 from dataclasses import dataclass
 
+from beartype import beartype
+from beartype.typing import Optional, Callable
+from torchtyping import TensorType
+
 import torch
 from torch.nn import Module, Dropout
 import torch.nn.functional as F
@@ -12,22 +16,14 @@ import torch.distributed as dist
 
 from accelerate import Accelerator
 
-from beartype import beartype
-from beartype.typing import Optional, Callable
-
-from einx import get_at
-
 from pytorch_custom_utils import (
     get_adam_optimizer,
     OptimizerWithWarmupSchedule
 )
 
 from pytorch_custom_utils.accelerate_utils import (
-    auto_unwrap_model,
     model_forward_contexts
 )
-
-from torchtyping import TensorType
 
 # helper functions
 
@@ -40,8 +36,10 @@ def freeze_all_layers_(module):
 
 def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     logits = model(seq)
-    prob = logits.softmax(dim = -1)
-    return get_at('b n [c], b n -> b n', prob, indices).clamp(min = eps).log()
+    probs = logits.softmax(dim = -1)
+    probs = rearrange(probs, '... -> ... 1')
+    logprobs = probs.gather(-1, indices).clamp(min = eps).log()
+    return rearrange(logprobs, '... 1 -> ...')
 
 def maybe_and_mask(*masks):
     masks = [*filter(exists, masks)]

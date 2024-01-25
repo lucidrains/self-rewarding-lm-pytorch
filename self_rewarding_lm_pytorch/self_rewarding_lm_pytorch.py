@@ -2,6 +2,10 @@ from copy import deepcopy
 from pathlib import Path
 from dataclasses import dataclass
 
+from beartype import beartype
+from beartype.typing import Optional, Dict, List, Union, Callable
+from torchtyping import TensorType
+
 import torch
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
@@ -9,14 +13,11 @@ from torch.utils.data import Dataset, ConcatDataset
 
 from numpy.lib.format import open_memmap
 
-from beartype import beartype
-from beartype.typing import Optional, Dict, List, Union, Callable
-
 from self_rewarding_lm_pytorch.dpo import (
     DPO,
     DPODataset,
-    EarlyStopper,
     DPOTrainer,
+    EarlyStopper,
     set_dropout_,
     adam_optimizer_with_linear_decay
 )
@@ -27,9 +28,11 @@ from accelerate import Accelerator
 
 from pytorch_custom_utils.utils import pad_or_slice_to
 
-from torchtyping import TensorType
-
-from x_transformers.autoregressive_wrapper import AutoregressiveWrapper
+from self_rewarding_lm_pytorch.sampling_utils import (
+    sample,
+    top_p,
+    top_k
+)
 
 # basic templating engine
 
@@ -237,7 +240,7 @@ class RewardGenerator(Module):
 
         """
         main contribution of the paper is the logic in this function
-        in paper, they sample it 4 times and then average
+        in paper, they sample it 3 times and then average
         """
 
         device = next(self.model.parameters()).device
@@ -250,11 +253,11 @@ class RewardGenerator(Module):
 
         reward_prompt = repeat(reward_prompt, 'n -> b n', b = self.num_evals_to_average)
 
-        wrapped_model = AutoregressiveWrapper(self.model)
-
-        reward_responses = wrapped_model.generate(
+        reward_responses = sample(
+            self.model,
             prompt = reward_prompt,
             temperature = self.eval_temperature,
+            filter_fn = top_p, 
             filter_kwargs = dict(
                 thres = self.eval_nucleus_p
             )
@@ -291,8 +294,14 @@ class SelfRewardingTrainer(Module):
         beta = 0.1,
         self_reward_num_iterations = 2,
         reward_prompt_config: Dict[str, RewardConfig] = REWARD_PROMPT_CONFIG,
-        reward_iteration_type = ['default', 'default'],
-        num_preference_pairs: List[int] = [3964, 6942],
+        reward_iteration_type = [
+            'default',
+            'default'
+        ],
+        num_preference_pairs: List[int] = [
+            3964,
+            6942
+        ],
         reward_generator_kwargs: dict = dict(
             num_candidate_responses = 4,
             gen_temperature = 0.7,
@@ -300,19 +309,28 @@ class SelfRewardingTrainer(Module):
             eval_temperature = 0.7,
             eval_nucleus_p = 0.9
         ),
+        prompt_dataset: Optional[Dataset] = None,
         model_generate_prompt: Optional[Module] = None,
         early_stopper: Optional[EarlyStopper] = None,
         accelerate_kwargs: dict = dict(),
         sft_trainer_kwargs: dict = dict(),
         dpo_trainer_kwargs: dict = dict(),
-        dropout = 0.1,
+        dropout: float = 0.1,
         checkpoints_folder: str = './checkpoints'
     ):
         super().__init__()
+
         assert all([key in reward_prompt_config for key in reward_iteration_type]), f'reward prompt must be one of {reward_prompt_config.keys()}'
 
-        if not exists(model_generate_prompt):
+        # appears the prompts come from llama 70B chat
+        # also offer a way for it to be passed in
+
+        assert (int(exists(prompt_dataset)) + int(exists(model_generate_prompt))) <= 1
+
+        if not exists(prompt_dataset) and not exists(model_generate_prompt):
             model_generate_prompt = deepcopy(model)
+
+        # reward related
 
         self.reward_prompt_configs = [reward_prompt_config[key] for key in reward_iteration_type]
         self.self_reward_num_iterations = self_reward_num_iterations
@@ -321,6 +339,8 @@ class SelfRewardingTrainer(Module):
         self.first_iterate_on_sft = exists(train_sft_dataset)
 
         self.accelerator = Accelerator(**accelerate_kwargs)
+
+        # sft
 
         self.sft_trainer = None
         if self.first_iterate_on_sft:
@@ -332,7 +352,11 @@ class SelfRewardingTrainer(Module):
                 **sft_trainer_kwargs
             )
 
+        # self-rewarding generator
+
         self.reward_generators = [RewardGenerator(model = model, model_generate_prompt = model_generate_prompt, reward_config = reward_config, num_preference_pairs = one_stage_num_preference_pairs, **reward_generator_kwargs) for reward_config, one_stage_num_preference_pairs in zip(self.reward_prompt_configs, num_preference_pairs)]
+
+        # dpo
 
         set_dropout_(model, dropout)
         self.dpo = DPO(model)
@@ -342,6 +366,8 @@ class SelfRewardingTrainer(Module):
             accelerator = self.accelerator,
             **dpo_trainer_kwargs
         )
+
+        # checkpoints folder
 
         checkpoints_folder = Path(checkpoints_folder)
         checkpoints_folder.mkdir(parents = True, exist_ok = True)

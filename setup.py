@@ -20,11 +20,9 @@ setup(
     'accelerate',
     'beartype',
     'einops>=0.7.0',
-    'einx',
     'Jinja2',
     'numpy',
     'pytorch-custom-utils>=0.0.12',
-    'x-transformers',
     'torch>=2.0',
     'torchtyping'
   ],
