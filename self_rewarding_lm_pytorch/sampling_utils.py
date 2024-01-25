@@ -1,9 +1,12 @@
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import Module
 
 from beartype import beartype
 from beartype.typing import Optional, Callable
+
+from tqdm import tqdm
 
 def exists(v):
     return v is not None
@@ -63,11 +66,11 @@ def sample(
     prompt_seq_len, out = prompt.shape[-1], prompt.clone()
     sample_num_times = max(0, seq_len - prompt_seq_len)
 
-    for _ in range(sample_num_times):
+    for _ in tqdm(range(sample_num_times)):
         logits = net(out)
         logits = logits[:, -1]
 
-        logits = filter_function(logits, **filter_kwargs)
+        logits = filter_fn(logits, **filter_kwargs)
         sample = gumbel_sample(logits, temperature = temperature, dim = -1)
 
         out = torch.cat((out, sample), dim = -1)

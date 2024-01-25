@@ -1,3 +1,4 @@
+import re
 from copy import deepcopy
 from pathlib import Path
 from dataclasses import dataclass
@@ -7,9 +8,11 @@ from beartype.typing import Optional, Dict, List, Union, Callable
 from torchtyping import TensorType
 
 import torch
+from torch import Tensor
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 from torch.utils.data import Dataset, ConcatDataset, DataLoader
+from torch.nn.utils.rnn import pad_sequence
 
 from numpy.lib.format import open_memmap
 
@@ -24,7 +27,7 @@ from self_rewarding_lm_pytorch.dpo import (
 
 from self_rewarding_lm_pytorch.spin import SPINTrainer
 
-from einops import rearrange
+from einops import rearrange, repeat
 
 from accelerate import Accelerator
 
@@ -55,6 +58,21 @@ def exists(v):
 
 def default(v, d):
     return v if exists(v) else d
+
+def first(arr):
+    return arr[0]
+
+def cycle(dl):
+    while True:
+        for batch in dl:
+            yield batch
+
+def always(val):
+    def decorator(fn):
+        def inner(*args, **kwargs):
+            return val
+        return inner
+    return decorator
 
 # constants
 # llm-as-judge prompt
@@ -87,12 +105,13 @@ necessary. To evaluate the response in alignment with this additive scoring mode
 systematically attribute points based on the outlined criteria.
 """
 
-def default_parse_reward_fn(llm_response: str):
-    result = re.search(r"Score: ([0-9\.]+)", a)
-    if result.groups == 0:
+def default_parse_reward_fn(llm_response: str) -> float:
+    result = re.search(r"Score: ([0-9\.]+)", llm_response)
+
+    if not exists(result) or result.groups == 0:
         return None
 
-    return result.groups(1)
+    return float(result.groups(1))
 
 # reward config
 
@@ -273,6 +292,7 @@ class DPODatasetGenerator(Module):
         preference_seq_memmap_file: str = 'preference_seq.memmap.npy',
         prompt_len_memmap_file: str = 'prompt_len.memmap.npy',
         preference_max_seq_len: int = 1024,
+        generate_reward_max_seq_len: int = 256,
         pad_id: int = -1
     ):
         super().__init__()
@@ -298,6 +318,8 @@ class DPODatasetGenerator(Module):
         self.num_evals_to_average = num_evals_to_average
 
         # shapes and padding
+
+        self.generate_reward_max_seq_len = generate_reward_max_seq_len
 
         self.num_preference_pairs = num_preference_pairs
 
@@ -330,7 +352,7 @@ class DPODatasetGenerator(Module):
         self,
         prompt: str,
         response: str
-    ) -> float:
+    ) -> Optional[float]:
 
         """
         main contribution of the paper is the logic in this function
@@ -339,10 +361,10 @@ class DPODatasetGenerator(Module):
 
         device = next(self.model.parameters()).device
 
-        template_fn = self.reward_config['template_fn']
-        parse_reward = self.reward_config['parse_reward']
+        template_fn = self.reward_config.template_fn
+        parse_reward = self.reward_config.parse_reward
 
-        reward_prompt = template_fn(prompt, response)
+        reward_prompt_str = template_fn(prompt = prompt, response = response)
         reward_prompt = self.tokenizer_encode(reward_prompt_str).to(device)
 
         reward_prompt = repeat(reward_prompt, 'n -> b n', b = self.num_evals_to_average)
@@ -350,6 +372,7 @@ class DPODatasetGenerator(Module):
         reward_responses = sample(
             self.model,
             prompt = reward_prompt,
+            seq_len = self.generate_reward_max_seq_len,
             temperature = self.eval_temperature,
             filter_fn = top_p, 
             filter_kwargs = dict(
@@ -362,12 +385,83 @@ class DPODatasetGenerator(Module):
 
         rewards = [*filter(exists, rewards)] # for now, just filter out any failed responses
 
-        avg_reward = Tensor(rewards).mean()
+        if len(rewards) == 0:
+            return None
+
+        avg_reward = Tensor(rewards).mean().item()
         return avg_reward
 
+    @torch.no_grad()
     def forward(self) -> DPODataset:
 
+        self.model.eval()
+        device = next(self.model.parameters()).device
 
+        num_generated = 0
+
+        pbar = tqdm()
+
+        prompt_dl = cycle(self.prompt_dataloader)
+
+        while num_generated < self.num_preference_pairs:
+
+            prompts: List[str] = next(prompt_dl)
+
+            prompt_tensors: List[Tensor] = [*map(self.tokenizer_encode, prompts)]
+
+            responses = []
+
+            for prompt, prompt_tensor in zip(prompts, prompt_tensors):
+
+                prompt_len = prompt_tensor.shape[-1]
+                repeated_prompt_tensor = repeat(prompt_tensor, 'n -> r n', r = self.num_candidate_responses)
+
+                candidate_responses_tensor = sample(
+                    self.model.cpu(),
+                    prompt = repeated_prompt_tensor,
+                    seq_len = self.preference_max_seq_len,
+                    temperature = self.gen_temperature,
+                    filter_fn = top_p,
+                    filter_kwargs = dict(
+                        thres = self.gen_nucleus_p
+                    )
+                )
+
+                candidate_responses: List[str] = [*map(self.tokenizer_decode, candidate_responses_tensor)]
+
+                # get rewards
+
+                rewards: List[Optional[float]] = [self.generate_reward(prompt, response) for response in candidate_responses]
+
+                # zip together the responses and rewards and filter out if reward is not generated correctly
+
+                paired_reward_response = [(reward, candidate_response) for reward, candidate_response in zip(rewards, candidate_responses_tensor)]
+
+                paired_reward_response = [*filter(lambda pair: exists(first(pair)), paired_reward_response)]
+                paired_reward_response.sort(key = first)
+
+                if len(paired_reward_response) < 2:
+                    continue
+
+                preferred_reward, preferred_response = paired_reward_response[0]
+                unpreferred_reward, unpreferred_response = paired_reward_response[-1]
+
+                if preferred_reward == unpreferred_reward:
+                    break
+
+                memmap_idx = num_generated
+
+                paired_responses = pad_sequence((preferred_response, unpreferred_response), padding_value = self.pad_id, batch_first = True)
+                paired_responses = pad_or_slice_to(paired_responses, self.preference_max_seq_len, dim = -1, pad_value = self.pad_id)
+
+                self.prompt_len_memmap[memmap_idx] = prompt_len
+                self.preference_seq_memmap[memmap_idx] = paired_responses.cpu().numpy()
+
+                num_generated += 1
+                pbar.update(1)
+
+                if num_generated >= self.num_preference_pairs:
+                    break
 
         # flush and return instance of DPO Dataset for the two memmapped data files
 
