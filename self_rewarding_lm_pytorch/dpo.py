@@ -1,3 +1,4 @@
+from pathlib import Path
 from copy import deepcopy
 from collections import namedtuple
 from dataclasses import dataclass
@@ -16,6 +17,10 @@ import torch.distributed as dist
 
 from accelerate import Accelerator
 
+from einops import rearrange
+
+from numpy.lib.format import open_memmap
+
 from pytorch_custom_utils import (
     get_adam_optimizer,
     OptimizerWithWarmupSchedule
@@ -24,6 +29,8 @@ from pytorch_custom_utils import (
 from pytorch_custom_utils.accelerate_utils import (
     model_forward_contexts
 )
+
+from tqdm import tqdm
 
 # helper functions
 
@@ -37,8 +44,8 @@ def freeze_all_layers_(module):
 def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     logits = model(seq)
     probs = logits.softmax(dim = -1)
-    probs = rearrange(probs, '... -> ... 1')
-    logprobs = probs.gather(-1, indices).clamp(min = eps).log()
+    seq = rearrange(seq, '... -> ... 1')
+    logprobs = probs.gather(-1, seq).clamp(min = eps).log()
     return rearrange(logprobs, '... 1 -> ...')
 
 def maybe_and_mask(*masks):
@@ -172,7 +179,7 @@ class DPODataset(Dataset):
         self.prompt_len = open_memmap(str(prompt_len_memmap_path), dtype = 'int', mode = 'r')
 
         self.seq_len = self.paired_sequences.shape[1]
-        assert self.paired_sequences.shape[0] == self.prompt_len == [0]
+        assert self.paired_sequences.shape[0] == self.prompt_len.shape[0]
 
     def __len__(self):
         return self.paired_sequences.shape[0]
@@ -181,7 +188,7 @@ class DPODataset(Dataset):
         sequences = self.paired_sequences[idx]
         prompt_lens = self.prompt_len[idx]
 
-        preferred_seq, unpreferred_seq = self.paired_sequences.unbind(dim = 1)
+        preferred_seq, unpreferred_seq = sequences
 
         return preferred_seq, unpreferred_seq, prompt_lens
 
@@ -340,19 +347,23 @@ class DPOTrainer(Module):
 
         iter_dl = cycle(train_dataloader)
 
+        pbar = tqdm()
+
         while True:
             self.model.train()
 
             batch = next(iter_dl)
 
-            dpo_loss = self.model(batch)
+            dpo_loss = self.model(*batch)
             self.accelerator.backward(dpo_loss)
+
+            self.accelerator.log(dict(loss = dpo_loss.item()), step = self.steps)
 
             self.optimizer.step()
             self.optimizer.zero_grad()
 
             self.steps += 1
-
+            pbar.update(1)
             self.accelerator.wait_for_everyone()
 
             if not (self.steps % self.check_early_stop_every):
@@ -368,4 +379,5 @@ class DPOTrainer(Module):
 
             self.accelerator.wait_for_everyone()
 
-        raise NotImplementedError
+        pbar.close()
+        print('dpo training finished')

@@ -24,7 +24,8 @@ setup(
     'numpy',
     'pytorch-custom-utils>=0.0.12',
     'torch>=2.0',
-    'torchtyping'
+    'torchtyping',
+    'tqdm'
   ],
   classifiers=[
     'Development Status :: 4 - Beta',

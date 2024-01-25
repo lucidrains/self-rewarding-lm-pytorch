@@ -36,6 +36,8 @@ from self_rewarding_lm_pytorch.sampling_utils import (
     top_k
 )
 
+from tqdm import tqdm
+
 # basic templating engine
 
 import jinja2
@@ -208,8 +210,8 @@ class SFTTrainer(Module):
     def forward(self):
         step = 0
 
-        for epoch in range(self.num_epochs):
-            for seq, prompt_len_or_mask in self.train_dataloader:
+        for epoch in tqdm(range(self.num_epochs)):
+            for seq, prompt_len_or_mask in tqdm(self.train_dataloader):
 
                 self.model.train()
 
@@ -219,7 +221,7 @@ class SFTTrainer(Module):
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
-                self.accelerator.log(dict(loss = loss.item()))
+                self.accelerator.log(dict(loss = loss.item()), step = step)
 
                 step += 1
 
@@ -243,7 +245,7 @@ class SFTTrainer(Module):
 
                         valid_loss = total_valid_loss / total_batches
 
-                        self.accelerator.log(dict(valid_loss = valid_loss))
+                        self.accelerator.log(dict(valid_loss = valid_loss), step = step)
 
                     self.wait()
 
@@ -270,7 +272,7 @@ class DPODatasetGenerator(Module):
         data_folder: str = './',
         preference_seq_memmap_file: str = 'preference_seq.memmap.npy',
         prompt_len_memmap_file: str = 'prompt_len.memmap.npy',
-        preference_max_seq_len: int = 4096,
+        preference_max_seq_len: int = 1024,
         pad_id: int = -1
     ):
         super().__init__()
@@ -365,7 +367,9 @@ class DPODatasetGenerator(Module):
 
     def forward(self) -> DPODataset:
 
-        raise NotImplementedError
+
+
+        # flush and return instance of DPO Dataset for the two memmapped data files
 
         self.prompt_len_memmap.flush()
         self.preference_seq_memmap.flush()
@@ -387,6 +391,7 @@ class SelfRewardingTrainer(Module):
         initial_sft: bool = True,
         spin: bool = False,
         beta = 0.1,
+        preference_max_seq_len: int = 1024,
         self_reward_num_iterations = 2,
         reward_prompt_config: Dict[str, RewardConfig] = REWARD_PROMPT_CONFIG,
         reward_iteration_type = [
@@ -476,6 +481,7 @@ class SelfRewardingTrainer(Module):
                 prompt_dataset = prompt_dataset,
                 reward_config = reward_config,
                 num_preference_pairs = one_stage_num_preference_pairs,
+                preference_max_seq_len = preference_max_seq_len,
                 tokenizer_encode = tokenizer_encode,
                 tokenizer_decode = tokenizer_decode,
                 **reward_generator_kwargs

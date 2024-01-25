@@ -13,6 +13,8 @@ from torch.nn.utils.rnn import pad_sequence
 
 from accelerate import Accelerator
 
+from einops import rearrange
+
 from pytorch_custom_utils import (
     get_adam_optimizer,
     OptimizerWithWarmupSchedule
@@ -36,8 +38,8 @@ def freeze_all_layers_(module):
 def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     logits = model(seq)
     probs = logits.softmax(dim = -1)
-    probs = rearrange(probs, '... -> ... 1')
-    logprobs = probs.gather(-1, indices).clamp(min = eps).log()
+    seq = rearrange(seq, '... -> ... 1')
+    logprobs = probs.gather(-1, seq).clamp(min = eps).log()
     return rearrange(logprobs, '... 1 -> ...')
 
 def maybe_and_mask(*masks):
