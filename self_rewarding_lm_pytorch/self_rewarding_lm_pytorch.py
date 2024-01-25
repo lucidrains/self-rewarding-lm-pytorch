@@ -427,7 +427,7 @@ class DPODatasetGenerator(Module):
                     )
                 )
 
-                candidate_responses: List[str] = [*map(self.tokenizer_decode, candidate_responses_tensor)]
+                candidate_responses: List[str] = [*map(self.tokenizer_decode, candidate_responses_tensor.long().tolist())]
 
                 # get rewards
 
