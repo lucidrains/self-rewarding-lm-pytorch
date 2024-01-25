@@ -220,7 +220,7 @@ class SPINTrainer(Module):
                     prompt_mask = prompt_mask
                 )
 
-                self.accelerator.backwards(spin_loss)
+                self.accelerator.backward(spin_loss)
 
                 self.optimizer.step()
                 self.optimizer.zero_grad()

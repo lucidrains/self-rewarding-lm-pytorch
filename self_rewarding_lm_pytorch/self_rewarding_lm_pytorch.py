@@ -9,7 +9,7 @@ from torchtyping import TensorType
 import torch
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
-from torch.utils.data import Dataset, ConcatDataset
+from torch.utils.data import Dataset, ConcatDataset, DataLoader
 
 from numpy.lib.format import open_memmap
 
@@ -21,6 +21,8 @@ from self_rewarding_lm_pytorch.dpo import (
     set_dropout_,
     adam_optimizer_with_linear_decay
 )
+
+from self_rewarding_lm_pytorch.spin import SPINTrainer
 
 from einops import rearrange
 
@@ -38,6 +40,11 @@ from self_rewarding_lm_pytorch.sampling_utils import (
 
 import jinja2
 jinja2_env = jinja2.Environment()
+
+def find_variables_from_jinja_template(template: str):
+    from jinja2 import meta
+    ast = jinja2_env.parse(template)
+    return meta.find_undeclared_variables(ast)
 
 # helper
 
@@ -93,6 +100,12 @@ class RewardConfig:
     parse_reward: Callable[[str], Optional[float]]
     render: Optional[Callable[..., str]] = None
 
+    def init(self):
+        prompt_template = self.prompt_template
+        assert find_variables_from_jinja_template(prompt_template) == {'prompt', 'response'}, 'template must include prompt and response templating variables'
+        self.template_fn = jinja2_env.from_string(prompt_template).render
+        return self
+
 # config, allowing for different types of reward prompting
 # colocate with functions for extracting the response and reward
 
@@ -113,14 +126,16 @@ class SFTTrainer(Module):
         *,
         accelerator: Accelerator,
         train_dataset: Union[List[Dataset], Dataset],
-        val_dataset: Optional[Dataset] = None,
+        valid_dataset: Optional[Dataset] = None,
         batch_size: int = 16,
         num_epochs: int = 3,
         start_learning_rate: float = 5.5e-6,
         end_learning_rate: float = 1.1e-6,
+        learning_rate_num_decay_steps: Optional[int] = None,
         weight_decay: float = 0.,
         ignore_index: int = -1,
-        adam_kwargs: dict = dict()
+        adam_kwargs: dict = dict(),
+        valid_every: int = 1
     ):
         super().__init__()
         self.accelerator = accelerator
@@ -134,51 +149,112 @@ class SFTTrainer(Module):
 
         self.train_dataloader = DataLoader(train_dataset, batch_size = batch_size, drop_last = True, shuffle = True)
 
-        self.model, self.train_dataloader = self.accelerator.prepare(self.model, self.train_dataloader)
+        (
+            self.model,
+            self.train_dataloader
+        ) = self.accelerator.prepare(
+            self.model,
+            self.train_dataloader
+        )
+
+        if not exists(learning_rate_num_decay_steps):
+            # default learning rate decay num steps to half of training dataset length
+            learning_rate_num_decay_steps = len(train_dataset) // 2
 
         self.optimizer = adam_optimizer_with_linear_decay(
             model,
             start_learning_rate,
             end_learning_rate,
+            num_decay_steps = learning_rate_num_decay_steps,
             accelerator = accelerator,
             weight_decay = weight_decay,
             adam_kwargs = adam_kwargs
         )
 
-        self.val_dataloader = None
-        if exists(val_dataset):
-            self.val_dataloader = DataLoader(val_dataset, batch_size = batch_size, drop_last = True, shuffle = True)
+        self.valid_every = valid_every
+
+        self.valid_dataloader = None
+        if exists(valid_dataset):
+            self.valid_dataloader = DataLoader(valid_dataset, batch_size = batch_size)
+
+    def wait(self):
+        return self.accelerator.wait_for_everyone()
+
+    def get_cross_entropy_loss(
+        self,
+        seq: TensorType['batch', 'seq', int],
+        prompt_len_or_mask: Union[TensorType['batch', int], TensorType['batch', 'seq', bool]]
+    ):
+        if prompt_len_or_mask.dtype == torch.long:
+            prompt_mask = torch.arange(seq.shape[-1], device = seq.device) < prompt_len_or_mask[..., None]
+        else:
+            prompt_mask = prompt_len_or_mask
+
+        seq, labels = seq[:, :-1], seq[:, 1:]
+
+        labels.masked_fill_(prompt_mask[:, 1:], self.ignore_index)
+
+        logits = self.model(seq)
+
+        return F.cross_entropy(
+            rearrange(logits, 'b n l -> b l n'),
+            labels,
+            ignore_index = self.ignore_index
+        )
 
     def forward(self):
-        for epoch in self.num_epochs:
-            for seq, prompt_mask in self.train_dataloader:
-                seq, labels = seq[: :-1], seq[:, 1:]
+        step = 0
 
-                labels.masked_fill_(prompt_mask[:, 1:], self.ignore_index)
+        for epoch in range(self.num_epochs):
+            for seq, prompt_len_or_mask in self.train_dataloader:
 
-                logits = self.model(seq)
+                self.model.train()
 
-                ce_loss = F.cross_entropy(
-                    rearrange(logits, 'b n l -> b l n'),
-                    labels,
-                    ignore_index = self.ignore_index
-                )
+                loss = self.get_cross_entropy_loss(seq, prompt_len_or_mask)
 
-                self.accelerator.backward(ce_loss)
+                self.accelerator.backward(loss)
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
+                self.accelerator.log(dict(loss = loss.item()))
+
+                step += 1
+
+                if exists(self.valid_dataloader) and not (step % self.valid_every):
+                    self.wait()
+
+                    if self.accelerator.is_main_process:
+                        total_valid_loss = 0.
+                        total_batches = 0.
+
+                        self.model.eval()
+
+                        with torch.no_grad():
+                            for seq, prompt_len_or_mask in self.valid_dataloader:
+                                batch = seq.shape[0]
+
+                                loss = self.get_cross_entropy_loss(seq, prompt_len_or_mask)
+
+                                total_valid_loss = loss.item() * batch
+                                total_batches += batch
+
+                        valid_loss = total_valid_loss / total_batches
+
+                        self.accelerator.log(dict(valid_loss = valid_loss))
+
+                    self.wait()
+
 # reward generator class
 
-class RewardGenerator(Module):
+class DPODatasetGenerator(Module):
     @beartype
     def __init__(
         self,
-        model_generate_prompt: Module,
         model: Module,
+        prompt_dataset: Dataset,
         num_preference_pairs: int,
-        tokenizer_encode: Callable[[str], TensorType['seq_len', int]],
-        tokenizer_decode: Callable[[TensorType['seq_len', int]], str],
+        tokenizer_encode: Callable[[str], TensorType['seq', int]],
+        tokenizer_decode: Callable[[TensorType['seq', int]], str],
         batch_size: int = 16,
         num_candidate_responses: int = 4,
         gen_temperature: float = 0.7,
@@ -188,24 +264,22 @@ class RewardGenerator(Module):
         num_evals_to_average: int = 3,
         *,
         reward_config: RewardConfig,
-        preference_seq_memmap_file: str,
-        prompt_len_memmap_file: str,
+        data_folder: str = './',
+        preference_seq_memmap_file: str = 'preference_seq.memmap.npy',
+        prompt_len_memmap_file: str = 'prompt_len.memmap.npy',
         preference_max_seq_len: int = 4096,
         pad_id: int = -1
     ):
         super().__init__()
-        self.model_generate_prompt = model_generate_prompt
 
         self.model = model
         self.num_candidate_responses = num_candidate_responses
 
-        self.reward_config = reward_config
-        prompt_template = reward_config['prompt_template']
-        assert jinja2.meta.find_undeclared_variables(jinja2_env.parse(prompt_template)) == {'prompt', 'response'}, 'template must include prompt and response templating variables'
-
-        self.reward_config['template_fn'] = jinja2_env.from_string(prompt_template).render
+        self.reward_config = reward_config.init()
 
         self.batch_size = batch_size
+        self.prompt_dataset = prompt_dataset
+        self.prompt_dataloader = DataLoader(prompt_dataset, batch_size = batch_size, shuffle = True)
 
         self.gen_nucleus_p = gen_nucleus_p
         self.gen_temperature = gen_temperature
@@ -218,10 +292,9 @@ class RewardGenerator(Module):
 
         self.num_evals_to_average = num_evals_to_average
 
-        self.num_preference_pairs = num_preference_pairs
+        # shapes and padding
 
-        self.preference_seq_memmap_file = preference_seq_memmap_file
-        self.prompt_len_memmap_file = prompt_len_memmap_file
+        self.num_preference_pairs = num_preference_pairs
 
         self.preference_max_seq_len = preference_max_seq_len
 
@@ -229,8 +302,16 @@ class RewardGenerator(Module):
 
         memmap_shape = (num_preference_pairs, 2, preference_max_seq_len)
 
-        self.preference_seq_memmap = open_memmap(preference_seq_memmap_file, dtype = 'int', mode = 'w+', shape = memmap_shape)
-        self.prompt_len_memmap = open_memmap(prompt_len_memmap, dtype = 'int', mode = 'w+', shape = (num_preference_pairs,))
+        # the memmap npy files
+
+        self.data_folder = Path(data_folder)
+        self.data_folder.mkdir(exist_ok = True, parents = True)
+
+        self.preference_seq_memmap_path = self.data_folder / preference_seq_memmap_file
+        self.prompt_len_memmap_path = self.data_folder / prompt_len_memmap_file
+
+        self.preference_seq_memmap = open_memmap(str(self.preference_seq_memmap_path), dtype = 'int', mode = 'w+', shape = memmap_shape)
+        self.prompt_len_memmap = open_memmap(str(self.prompt_len_memmap_path), dtype = 'int', mode = 'w+', shape = (num_preference_pairs,))
 
     def generate_reward(
         self,
@@ -289,8 +370,12 @@ class SelfRewardingTrainer(Module):
         self,
         model: Module,
         *,
+        tokenizer_encode: Callable[[str], TensorType['seq', int]],
+        tokenizer_decode: Callable[[TensorType['seq', int]], str],
         train_sft_dataset: Optional[Union[List[Dataset], Dataset]] = None,
         valid_sft_dataset: Optional[Dataset] = None,
+        initial_sft: bool = True,
+        spin: bool = False,
         beta = 0.1,
         self_reward_num_iterations = 2,
         reward_prompt_config: Dict[str, RewardConfig] = REWARD_PROMPT_CONFIG,
@@ -314,6 +399,7 @@ class SelfRewardingTrainer(Module):
         early_stopper: Optional[EarlyStopper] = None,
         accelerate_kwargs: dict = dict(),
         sft_trainer_kwargs: dict = dict(),
+        spin_trainer_kwargs: dict = dict(),
         dpo_trainer_kwargs: dict = dict(),
         dropout: float = 0.1,
         checkpoints_folder: str = './checkpoints'
@@ -330,13 +416,15 @@ class SelfRewardingTrainer(Module):
         if not exists(prompt_dataset) and not exists(model_generate_prompt):
             model_generate_prompt = deepcopy(model)
 
+        assert exists(prompt_dataset), 'for now only support prompt dataset being passed in'
+
         # reward related
 
         self.reward_prompt_configs = [reward_prompt_config[key] for key in reward_iteration_type]
         self.self_reward_num_iterations = self_reward_num_iterations
 
         self.model = model
-        self.first_iterate_on_sft = exists(train_sft_dataset)
+        self.first_iterate_on_sft = initial_sft
 
         self.accelerator = Accelerator(**accelerate_kwargs)
 
@@ -344,6 +432,8 @@ class SelfRewardingTrainer(Module):
 
         self.sft_trainer = None
         if self.first_iterate_on_sft:
+            assert exists(train_sft_dataset)
+
             self.sft_trainer = SFTTrainer(
                 model,
                 accelerator = self.accelerator,
@@ -352,9 +442,34 @@ class SelfRewardingTrainer(Module):
                 **sft_trainer_kwargs
             )
 
+        # spin
+
+        self.spin = spin
+        self.spin_trainer = None
+
+        if spin:
+            assert exists(train_sft_dataset)
+
+            self.spin_trainer = SPINTrainer(
+                model,
+                accelerator = self.accelerator,
+                sft_dataset = self.train_sft_dataset,
+                **spin_trainer_kwargs
+            )
+
         # self-rewarding generator
 
-        self.reward_generators = [RewardGenerator(model = model, model_generate_prompt = model_generate_prompt, reward_config = reward_config, num_preference_pairs = one_stage_num_preference_pairs, **reward_generator_kwargs) for reward_config, one_stage_num_preference_pairs in zip(self.reward_prompt_configs, num_preference_pairs)]
+        self.dpo_dataset_generators = [
+            DPODatasetGenerator(
+                model = model,
+                prompt_dataset = prompt_dataset,
+                reward_config = reward_config,
+                num_preference_pairs = one_stage_num_preference_pairs,
+                tokenizer_encode = tokenizer_encode,
+                tokenizer_decode = tokenizer_decode,
+                **reward_generator_kwargs
+            ) for reward_config, one_stage_num_preference_pairs in zip(self.reward_prompt_configs, num_preference_pairs)
+        ]
 
         # dpo
 
@@ -373,6 +488,9 @@ class SelfRewardingTrainer(Module):
         checkpoints_folder.mkdir(parents = True, exist_ok = True)
         self.checkpoints_folder = checkpoints_folder
 
+    def wait(self):
+        return self.accelerator.wait_for_everyone()
+
     def save(self, path: str, overwrite: bool = False):
         if not self.accelerator.is_main_process:
             return
@@ -387,21 +505,43 @@ class SelfRewardingTrainer(Module):
 
         torch.save(pkg, str(path))
 
-    def forward(self):
+    def forward(
+        self,
+        overwrite_checkpoints: bool = False
+    ):
 
         if self.first_iterate_on_sft:
             self.sft_trainer()
-            self.save('sft.ckpt.pt')
 
-        for ind, reward_generator in enumerate(range(self.reward_generators)):
+            self.wait()
+
+            self.save('sft.ckpt.pt', overwrite = overwrite_checkpoints)
+
+            self.wait()
+
+        if self.spin:
+            self.spin_trainer()
+
+            self.wait()
+
+            self.save('spin.ckpt.pt', overwrite = overwrite_checkpoints)
+
+            self.wait()
+
+        for ind, dpo_dataset_generator in enumerate(self.dpo_dataset_generators):
+
             iterate_num = ind + 1
 
-            self_reward_dataset = reward_generator()
+            dpo_dataset_from_self_reward = dpo_dataset_generator()
 
-            self.dpo_trainer(self_reward_dataset)
+            self.dpo_trainer(dpo_dataset_from_self_reward)
+
+            self.wait()
 
             self.dpo.update_reference_model_with_policy()
 
-            self.save(f'self-reward.{iterate_num}.ckpt.pt')
+            self.save(f'self-reward.{iterate_num}.ckpt.pt', overwrite = overwrite_checkpoints)
+
+            self.wait()
 
         print(f'done')

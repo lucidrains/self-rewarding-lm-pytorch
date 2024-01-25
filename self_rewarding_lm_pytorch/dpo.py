@@ -155,14 +155,21 @@ class EarlyStopper(Module):
 class DPODataset(Dataset):
     def __init__(
         self,
-        preference_seq_memmap_file: str,
-        prompt_len_memmap_file: str
+        data_folder: str = './',
+        preference_seq_memmap_file: str = 'preference_seq.memmap.npy',
+        prompt_len_memmap_file: str = 'prompt_len.memmap.npy',
     ):
-        assert Path(preference_seq_memmap_file).exists()
-        assert Path(prompt_len_memmap_file).exists()
+        self.data_folder = Path(data_folder)
+        assert self.data_folder.exists() and self.data_folder.is_dir()
 
-        self.paired_sequences = open_memmap(preference_seq_memmap_file, dtype = 'int', mode = 'r')
-        self.prompt_len = open_memmap(prompt_len_memmap_file, dtype = 'int', mode = 'r')
+        preference_seq_memmap_path = self.data_folder / preference_seq_memmap_file
+        prompt_len_memmap_path = self.data_folder / prompt_len_memmap_file
+
+        assert preference_seq_memmap_path.exists()
+        assert prompt_len_memmap_path.exists()
+
+        self.paired_sequences = open_memmap(str(preference_seq_memmap_path), dtype = 'int', mode = 'r')
+        self.prompt_len = open_memmap(str(prompt_len_memmap_path), dtype = 'int', mode = 'r')
 
         self.seq_len = self.paired_sequences.shape[1]
         assert self.paired_sequences.shape[0] == self.prompt_len == [0]
