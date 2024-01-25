@@ -183,7 +183,10 @@ class SFTTrainer(Module):
     def get_cross_entropy_loss(
         self,
         seq: TensorType['batch', 'seq', int],
-        prompt_len_or_mask: Union[TensorType['batch', int], TensorType['batch', 'seq', bool]]
+        prompt_len_or_mask: Union[
+            TensorType['batch', int],
+            TensorType['batch', 'seq', bool]
+        ]
     ):
         if prompt_len_or_mask.dtype == torch.long:
             prompt_mask = torch.arange(seq.shape[-1], device = seq.device) < prompt_len_or_mask[..., None]
@@ -302,13 +305,21 @@ class DPODatasetGenerator(Module):
 
         memmap_shape = (num_preference_pairs, 2, preference_max_seq_len)
 
+        # save for returning instance of DPO Dataset at the end
+
+        self.dpo_dataset_kwargs = dict(
+            data_folder = data_folder,
+            preference_seq_memmap_file = preference_seq_memmap_file,
+            prompt_len_memmap_file = prompt_len_memmap_file
+        )
+
         # the memmap npy files
 
-        self.data_folder = Path(data_folder)
-        self.data_folder.mkdir(exist_ok = True, parents = True)
+        self.data_folder_path = Path(data_folder)
+        self.data_folder_path.mkdir(exist_ok = True, parents = True)
 
-        self.preference_seq_memmap_path = self.data_folder / preference_seq_memmap_file
-        self.prompt_len_memmap_path = self.data_folder / prompt_len_memmap_file
+        self.preference_seq_memmap_path = self.data_folder_path / preference_seq_memmap_file
+        self.prompt_len_memmap_path = self.data_folder_path / prompt_len_memmap_file
 
         self.preference_seq_memmap = open_memmap(str(self.preference_seq_memmap_path), dtype = 'int', mode = 'w+', shape = memmap_shape)
         self.prompt_len_memmap = open_memmap(str(self.prompt_len_memmap_path), dtype = 'int', mode = 'w+', shape = (num_preference_pairs,))
@@ -359,8 +370,7 @@ class DPODatasetGenerator(Module):
         self.prompt_len_memmap.flush()
         self.preference_seq_memmap.flush()
 
-        dpo_dataset = DPODataset(self.preference_seq_memmap_file, self.prompt_len_memmap_file)
-        return dpo_dataset
+        return DPODataset(**self.dpo_dataset_kwargs)
 
 # fine tuning class
 
@@ -418,19 +428,17 @@ class SelfRewardingTrainer(Module):
 
         assert exists(prompt_dataset), 'for now only support prompt dataset being passed in'
 
-        # reward related
-
-        self.reward_prompt_configs = [reward_prompt_config[key] for key in reward_iteration_type]
-        self.self_reward_num_iterations = self_reward_num_iterations
+        # model and accelerator
 
         self.model = model
-        self.first_iterate_on_sft = initial_sft
 
         self.accelerator = Accelerator(**accelerate_kwargs)
 
         # sft
 
         self.sft_trainer = None
+        self.first_iterate_on_sft = initial_sft
+
         if self.first_iterate_on_sft:
             assert exists(train_sft_dataset)
 
@@ -457,7 +465,10 @@ class SelfRewardingTrainer(Module):
                 **spin_trainer_kwargs
             )
 
-        # self-rewarding generator
+        # self-reward related
+
+        self.reward_prompt_configs = [reward_prompt_config[key] for key in reward_iteration_type]
+        self.self_reward_num_iterations = self_reward_num_iterations
 
         self.dpo_dataset_generators = [
             DPODatasetGenerator(
