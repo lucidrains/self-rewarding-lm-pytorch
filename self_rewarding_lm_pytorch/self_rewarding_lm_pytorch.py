@@ -461,10 +461,13 @@ class DPODatasetGenerator(Module):
                 memmap_idx = num_generated
 
                 paired_responses = pad_sequence((preferred_response, unpreferred_response), padding_value = self.pad_id, batch_first = True)
-                paired_responses = pad_or_slice_to(paired_responses, self.preference_max_seq_len, dim = -1, pad_value = self.pad_id)
+
+                paired_responses_with_prompt = torch.cat((repeated_prompt_tensor[:2], paired_responses), dim = -1)
+
+                paired_responses_with_prompt = pad_or_slice_to(paired_responses_with_prompt, self.preference_max_seq_len, dim = -1, pad_value = self.pad_id)
 
                 self.prompt_len_memmap[memmap_idx] = prompt_len
-                self.preference_seq_memmap[memmap_idx] = paired_responses.cpu().numpy()
+                self.preference_seq_memmap[memmap_idx] = paired_responses_with_prompt.cpu().numpy()
                 self.self_reward_memmap_file[memmap_idx] = np.array([preferred_reward, unpreferred_reward])
 
                 num_generated += 1
