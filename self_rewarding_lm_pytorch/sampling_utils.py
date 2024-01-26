@@ -108,7 +108,10 @@ def sample(
         if all_eos:
             break
 
+    out = out[:, :seq_len]
+
     if exists(eos_id):
+        is_eos_mask = out == eos_id
         after_eos_mask = F.pad(is_eos_mask.cumsum(dim = -1) > 0, (1, -1), value = False)
         out = out.masked_fill_(after_eos_mask, pad_id)
 
