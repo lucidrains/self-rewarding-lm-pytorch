@@ -189,8 +189,8 @@ class DPODataset(Dataset):
         return self.paired_sequences.shape[0]
 
     def __getitem__(self, idx):
-        sequences = self.paired_sequences[idx]
-        prompt_lens = self.prompt_len[idx]
+        sequences = self.paired_sequences[idx].copy()
+        prompt_lens = self.prompt_len[idx].copy()
 
         preferred_seq, unpreferred_seq = sequences
 

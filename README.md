@@ -80,6 +80,7 @@ trainer(overwrite_checkpoints = True)
 - [ ] consider KTO
 - [ ] handle eos
 - [ ] any order of sft, spin, self-rewarding dpo, dpo with external reward model
+- [ ] show an example for using your own reward prompt instead of default llm-as-judge
 
 ## Citation
 
