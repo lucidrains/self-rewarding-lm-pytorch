@@ -417,7 +417,7 @@ class DPODatasetGenerator(Module):
                 repeated_prompt_tensor = repeat(prompt_tensor, 'n -> r n', r = self.num_candidate_responses)
 
                 candidate_responses_tensor = sample(
-                    self.model.cpu(),
+                    self.model,
                     prompt = repeated_prompt_tensor,
                     seq_len = self.preference_max_seq_len,
                     temperature = self.gen_temperature,
@@ -511,7 +511,8 @@ class SelfRewardingTrainer(Module):
         spin_trainer_kwargs: dict = dict(),
         dpo_trainer_kwargs: dict = dict(),
         dropout: float = 0.1,
-        checkpoints_folder: str = './checkpoints'
+        checkpoints_folder: str = './checkpoints',
+        pad_id: int = -1
     ):
         super().__init__()
 
@@ -586,7 +587,11 @@ class SelfRewardingTrainer(Module):
         # dpo
 
         set_dropout_(model, dropout)
-        self.dpo = DPO(model)
+        self.dpo = DPO(
+            model,
+            beta = beta,
+            pad_id = pad_id
+        )
 
         self.dpo_trainer = DPOTrainer(
             dpo = self.dpo,

@@ -37,6 +37,17 @@ def freeze_all_layers_(module):
     for param in module.parameters():
         param.requires_grad = False
 
+def masked_mean(tensor, mask, dim = -1, eps = 1e-5):
+    if not exists(mask):
+        return tensor.mean(dim = dim)
+
+    tensor.masked_fill_(~mask, 0.)
+
+    total_el = mask.sum(dim = dim)
+    mean = tensor.sum(dim = dim) / total_el.clamp(min = eps)
+    mean.masked_fill_(total_el == 0, 0.)
+    return mean
+
 def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     logits = model(seq)
     probs = logits.softmax(dim = -1)
@@ -89,8 +100,7 @@ class SPIN(Module):
         self,
         generated_seq: TensorType['b', 'n', int],
         real_seq: TensorType['b', 'n', int],
-        prompt_len: Optional[TensorType['b', int]] = None,
-        prompt_mask: Optional[TensorType['b', 'n', bool]] = None,
+        prompt_len: Optional[TensorType['b', int]],
         generated_seq_mask: Optional[TensorType['b', 'n', bool]] = None,
         real_seq_mask: Optional[TensorType['b', 'n', bool]] = None
     ):
@@ -99,20 +109,10 @@ class SPIN(Module):
         n - sequence length
         """
 
-        real_seq_len = real_seq.shape[-1]
-        generated_seq_len = generated_seq.shape[-1]
-        min_seq_len = min(real_seq_len, generated_seq_len)
+        assert generated_seq.ndim == real_seq.ndim == 2
 
-        generated_seq, real_seq, prompt_mask = map(lambda t: t[..., :min_seq_len], (generated_seq, real_seq, prompt_mask))
-
-        assert generated_seq.ndim == 2
-        assert generated_seq.shape == real_seq.shape
-
-        seq_len = generated_seq.shape[-1]
-
-        if exists(prompt_len):
-            assert not exists(prompt_mask)
-            prompt_mask = torch.arange(seq_len, device = self.device) < prompt_len[:, None]
+        real_prompt_mask = torch.arange(real_seq.shape[-1], device = self.device) < prompt_len[:, None]
+        generated_prompt_mask = torch.arange(generated_seq.shape[-1], device = self.device) < prompt_len[:, None]
 
         """
         Equation 4.7 in https://arxiv.org/abs/2401.01335v1
@@ -135,12 +135,14 @@ class SPIN(Module):
         policy_generated_logprob = log_prob_from_model_and_seq(self.policy_model, generated_seq)
         policy_real_logprob = log_prob_from_model_and_seq(self.policy_model, real_seq)
 
+        # masked mean for variable lengths
+
+        policy_generated_logprob, ref_generated_logprob = [masked_mean(seq, maybe_and_mask(generated_seq_mask, ~generated_prompt_mask)) for seq in (policy_generated_logprob, ref_generated_logprob)]
+        policy_real_logprob, ref_real_logprob = [masked_mean(seq, maybe_and_mask(real_seq_mask, ~real_prompt_mask)) for seq in (policy_real_logprob, ref_real_logprob)]
+
+        # SPIN loss
+
         losses = -F.logsigmoid(self.λ * ((policy_real_logprob - ref_real_logprob) - (policy_generated_logprob - ref_generated_logprob)))
-
-        loss_mask = maybe_and_mask(generated_seq_mask, real_seq, ~prompt_mask)
-
-        if exists(loss_mask):
-            losses = losses[loss_mask]
 
         return losses.mean()
 
@@ -209,12 +211,9 @@ class SPINTrainer(Module):
         )
 
         for epoch in tqdm(range(self.epochs)):
-            for real_seq, prompt_len_or_mask in self.train_dataloader:
+            for real_seq, prompt_len in self.train_dataloader:
 
-                if prompt_len_or_mask.dtype == torch.long:
-                    prompt_mask = torch.arange(real_seq.shape[-1], device = real_seq.device) < prompt_len_or_mask[..., None]
-                else:
-                    prompt_mask = prompt_len_or_mask
+                prompt_mask = torch.arange(real_seq.shape[-1], device = real_seq.device) < prompt_len[..., None]
 
                 prompts = [one_real_seq[one_prompt_mask] for one_real_seq, one_prompt_mask in zip(real_seq, prompt_mask)]
 
@@ -240,7 +239,7 @@ class SPINTrainer(Module):
                 spin_loss = spin(
                     real_seq = real_seq,
                     generated_seq = generated_seqs,
-                    prompt_mask = prompt_mask
+                    prompt_len = prompt_len
                 )
 
                 self.accelerator.backward(spin_loss)

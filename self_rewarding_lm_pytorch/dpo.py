@@ -41,6 +41,17 @@ def freeze_all_layers_(module):
     for param in module.parameters():
         param.requires_grad = False
 
+def masked_mean(tensor, mask, dim = -1, eps = 1e-5):
+    if not exists(mask):
+        return tensor.mean(dim = dim)
+
+    tensor.masked_fill_(~mask, 0.)
+
+    total_el = mask.sum(dim = dim)
+    mean = tensor.sum(dim = dim) / total_el.clamp(min = eps)
+    mean.masked_fill_(total_el == 0, 0.)
+    return mean
+
 def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     logits = model(seq)
     probs = logits.softmax(dim = -1)
@@ -226,8 +237,7 @@ class DPO(Module):
         self,
         preferred_seq: TensorType['b', 'n', int],
         unpreferred_seq: TensorType['b', 'n', int],
-        prompt_len: Optional[TensorType['b', int]] = None,
-        prompt_mask: Optional[TensorType['b', 'n', bool]] = None,
+        prompt_len: TensorType['b', int],
         preferred_seq_mask: Optional[TensorType['b', 'n', bool]] = None,
         unpreferred_seq_mask: Optional[TensorType['b', 'n', bool]] = None
     ):
@@ -236,13 +246,10 @@ class DPO(Module):
         n - sequence length
         """
 
-        assert preferred_seq.ndim == 2
-        assert preferred_seq.shape == unpreferred_seq.shape
-        seq_len = preferred_seq.shape[-1]
+        assert preferred_seq.ndim == unpreferred_seq.ndim == 2
 
-        if exists(prompt_len):
-            assert not exists(prompt_mask)
-            prompt_mask = torch.arange(seq_len, device = self.device) < prompt_len[:, None]
+        preferred_prompt_mask = torch.arange(preferred_seq.shape[-1], device = self.device) < prompt_len[:, None]
+        unpreferred_prompt_mask = torch.arange(unpreferred_seq.shape[-1], device = self.device) < prompt_len[:, None]
 
         """
         Following Appendix B in https://arxiv.org/abs/2305.18290
@@ -265,15 +272,17 @@ class DPO(Module):
         policy_preferred_logprob = log_prob_from_model_and_seq(self.policy_model, preferred_seq)
         policy_unpreferred_logprob = log_prob_from_model_and_seq(self.policy_model, unpreferred_seq)
 
+        # masked mean
+
+        policy_preferred_logprob, ref_preferred_logprob = [masked_mean(seq, maybe_and_mask(preferred_seq_mask, ~preferred_prompt_mask)) for seq in (policy_preferred_logprob, ref_preferred_logprob)]
+        policy_unpreferred_logprob, ref_unpreferred_logprob = [masked_mean(seq, maybe_and_mask(unpreferred_seq_mask, ~unpreferred_prompt_mask)) for seq in (policy_unpreferred_logprob, ref_unpreferred_logprob)]
+
+        # DPO loss
+
         policy_logratios = policy_preferred_logprob - policy_unpreferred_logprob
         ref_logratios = ref_preferred_logprob - ref_unpreferred_logprob
 
         losses = -F.logsigmoid(self.beta * (policy_logratios - ref_logratios))
-
-        loss_mask = maybe_and_mask(preferred_seq_mask, unpreferred_seq, ~prompt_mask)
-
-        if exists(loss_mask):
-            losses = losses[loss_mask]
 
         return losses.mean()
 
