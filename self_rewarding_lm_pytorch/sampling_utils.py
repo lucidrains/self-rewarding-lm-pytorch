@@ -23,8 +23,8 @@ def gumbel_noise(t):
     noise = torch.zeros_like(t).uniform_(0, 1)
     return -log(-log(noise))
 
-def gumbel_sample(t, temperature = 1., dim = -1, keepdim = True):
-    return ((t / max(temperature, 1e-10)) + gumbel_noise(t)).argmax(dim = dim, keepdim = keepdim)
+def gumbel_sample(t, temperature = 1., dim = -1, keepdim = True, eps = 1e-10):
+    return ((t / max(temperature, eps)) + gumbel_noise(t)).argmax(dim = dim, keepdim = keepdim)
 
 # nucleus
 
@@ -54,7 +54,7 @@ def top_k(logits, frac_num_tokens = 0.1, k: Optional[int] = None):
 # decoding
 
 @torch.no_grad()
-@beartype()
+@beartype
 def sample(
     net: Module,
     prompt: Tensor,

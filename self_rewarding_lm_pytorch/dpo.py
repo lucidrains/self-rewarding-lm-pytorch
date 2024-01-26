@@ -30,6 +30,10 @@ from pytorch_custom_utils.accelerate_utils import (
     model_forward_contexts
 )
 
+from pytorch_custom_utils.utils import (
+    masked_mean
+)
+
 from tqdm import tqdm
 
 # helper functions
@@ -40,17 +44,6 @@ def exists(v):
 def freeze_all_layers_(module):
     for param in module.parameters():
         param.requires_grad = False
-
-def masked_mean(tensor, mask, dim = -1, eps = 1e-5):
-    if not exists(mask):
-        return tensor.mean(dim = dim)
-
-    tensor.masked_fill_(~mask, 0.)
-
-    total_el = mask.sum(dim = dim)
-    mean = tensor.sum(dim = dim) / total_el.clamp(min = eps)
-    mean.masked_fill_(total_el == 0, 0.)
-    return mean
 
 def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     logits = model(seq)
@@ -356,7 +349,7 @@ class DPOTrainer(Module):
 
         iter_dl = cycle(train_dataloader)
 
-        pbar = tqdm()
+        pbar = tqdm(desc = 'dpo finetuning')
 
         while True:
             self.model.train()

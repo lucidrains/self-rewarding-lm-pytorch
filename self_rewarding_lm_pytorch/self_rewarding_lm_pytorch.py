@@ -229,8 +229,8 @@ class SFTTrainer(Module):
     def forward(self):
         step = 0
 
-        for epoch in tqdm(range(self.num_epochs)):
-            for seq, prompt_len_or_mask in tqdm(self.train_dataloader):
+        for epoch in tqdm(range(self.num_epochs), desc = 'sft finetuning epoch'):
+            for seq, prompt_len_or_mask in tqdm(self.train_dataloader, desc = 'sft finetuning'):
 
                 self.model.train()
 
@@ -399,7 +399,7 @@ class DPODatasetGenerator(Module):
 
         num_generated = 0
 
-        pbar = tqdm()
+        pbar = tqdm(desc = 'generating dpo dataset with self-rewarding')
 
         prompt_dl = cycle(self.prompt_dataloader)
 

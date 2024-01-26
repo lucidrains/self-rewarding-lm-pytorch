@@ -20,6 +20,10 @@ from pytorch_custom_utils import (
     OptimizerWithWarmupSchedule
 )
 
+from pytorch_custom_utils.utils import (
+    masked_mean
+)
+
 from self_rewarding_lm_pytorch.sampling_utils import (
     sample,
     top_p,
@@ -36,17 +40,6 @@ def exists(v):
 def freeze_all_layers_(module):
     for param in module.parameters():
         param.requires_grad = False
-
-def masked_mean(tensor, mask, dim = -1, eps = 1e-5):
-    if not exists(mask):
-        return tensor.mean(dim = dim)
-
-    tensor.masked_fill_(~mask, 0.)
-
-    total_el = mask.sum(dim = dim)
-    mean = tensor.sum(dim = dim) / total_el.clamp(min = eps)
-    mean.masked_fill_(total_el == 0, 0.)
-    return mean
 
 def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     logits = model(seq)
@@ -210,8 +203,8 @@ class SPINTrainer(Module):
             λ = self.spin_λ
         )
 
-        for epoch in tqdm(range(self.epochs)):
-            for real_seq, prompt_len in self.train_dataloader:
+        for epoch in tqdm(range(self.epochs), desc = 'spin epoch'):
+            for real_seq, prompt_len in tqdm(self.train_dataloader, desc = 'spin finetuning'):
 
                 prompt_mask = torch.arange(real_seq.shape[-1], device = real_seq.device) < prompt_len[..., None]
 
