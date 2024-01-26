@@ -59,7 +59,7 @@ def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
 
 def prompt_mask_from_len(lengths, seq):
     seq_len, device = seq.shape[-1], seq.device
-    return torch.arange(seq_len, device = device) < rearrange(prompt_len, '... -> ... 1')
+    return torch.arange(seq_len, device = device) < rearrange(lengths, '... -> ... 1')
 
 def maybe_and_mask(*masks):
     masks = [*filter(exists, masks)]
@@ -243,6 +243,8 @@ class DPO(Module):
         preferred_seq_mask: Optional[TensorType['b', 'n', bool]] = None,
         unpreferred_seq_mask: Optional[TensorType['b', 'n', bool]] = None
     ):
+        self.policy_model.train()
+
         """
         b - batch
         n - sequence length
@@ -344,6 +346,12 @@ class DPOTrainer(Module):
     def is_main(self):
         return self.accelerator.is_main_process
 
+    def wait(self):
+        return self.accelerator.wait_for_everyone()
+
+    def log(self, **data):
+        self.accelerator.log(data, step = self.steps)
+
     def forward(
         self,
         train_self_reward_dataset: Dataset
@@ -363,18 +371,20 @@ class DPOTrainer(Module):
             dpo_loss = self.model(*batch)
             self.accelerator.backward(dpo_loss)
 
-            self.accelerator.log(dict(loss = dpo_loss.item()), step = self.steps)
+            self.log(loss = dpo_loss.item())
 
             self.optimizer.step()
             self.optimizer.zero_grad()
 
             self.steps += 1
             pbar.update(1)
-            self.accelerator.wait_for_everyone()
+            self.wait()
 
             if not (self.steps % self.check_early_stop_every) and exists(self.early_stopper):
 
                 early_stop_return = self.early_stopper()
+
+                self.log(dpo_valid_score = early_stop_return.score)
 
                 if self.is_main and early_stop_return.should_stop:
                     self.break_signal.copy_(1.)
@@ -383,7 +393,7 @@ class DPOTrainer(Module):
                 if self.break_signal.item() == 1:
                     break
 
-            self.accelerator.wait_for_everyone()
+            self.wait()
 
         pbar.close()
         print('dpo training finished')

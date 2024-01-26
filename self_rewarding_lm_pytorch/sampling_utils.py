@@ -2,11 +2,12 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import Module
+from torch.nn.utils.rnn import pad_sequence
 
 from beartype import beartype
-from beartype.typing import Optional, Callable
+from beartype.typing import Optional, Callable, List, Tuple
 
-from tqdm import tqdm
+from einops import rearrange
 
 def exists(v):
     return v is not None
@@ -57,22 +58,63 @@ def top_k(logits, frac_num_tokens = 0.1, k: Optional[int] = None):
 @beartype
 def sample(
     net: Module,
-    prompt: Tensor,
+    prompts,
     seq_len: int,
     temperature = 1.,
     filter_fn: Callable = top_p,
-    filter_kwargs: dict = dict()
+    filter_kwargs: dict = dict(),
+    pad_id: int = -1,
+    eos_id: Optional[int] = None,
 ):
-    prompt_seq_len, out = prompt.shape[-1], prompt.clone()
-    sample_num_times = max(0, seq_len - prompt_seq_len)
+    device = next(net.parameters()).device
+    net.eval()
 
-    for _ in tqdm(range(sample_num_times)):
-        logits = net(out)
-        logits = logits[:, -1]
+    if isinstance(prompts, (tuple, list)):
+        prompts = pad_sequence(prompts, batch_first = True, padding_value = pad_id)
+
+    batch, prompts_tensor_len = prompts.shape
+
+    batch_arange = torch.arange(batch, device = device)[..., None]
+
+    prompt_lens = (prompts != pad_id).sum(dim = -1)
+    curr_seq_indices = prompt_lens[..., None]
+
+    out = prompts.clone()
+
+    while (curr_seq_indices < seq_len).any():
+        out = F.pad(out, (0, 1), value = pad_id)
+
+        net_input = out.masked_fill(out == pad_id, 0)
+
+        logits = net(net_input)
+
+        logits = logits[batch_arange, curr_seq_indices]
+        logits = rearrange(logits, 'b 1 d -> b d')
 
         logits = filter_fn(logits, **filter_kwargs)
-        sample = gumbel_sample(logits, temperature = temperature, dim = -1)
+        sampled_tokens = gumbel_sample(logits, temperature = temperature, dim = -1)
 
-        out = torch.cat((out, sample), dim = -1)
+        out[batch_arange, curr_seq_indices] = sampled_tokens
 
-    return out[..., prompt_seq_len:]
+        curr_seq_indices += 1
+        curr_seq_indices.clamp_(max = seq_len)
+
+        if not exists(eos_id):
+            continue
+
+        is_eos_mask = out == eos_id
+        all_eos = is_eos_mask.any(dim = -1).all()
+
+        if all_eos:
+            break
+
+    if exists(eos_id):
+        after_eos_mask = F.pad(is_eos_mask.cumsum(dim = -1) > 0, (1, -1), value = False)
+        out = out.masked_fill_(after_eos_mask, pad_id)
+
+    prompt_mask = torch.arange(out.shape[-1], device = device) < prompt_lens[..., None]
+
+    generated_seq_mask = out != pad_id & ~prompt_mask
+    seq_lens = generated_seq_mask.sum(dim = -1).tolist()
+
+    return out[generated_seq_mask].split(seq_lens)

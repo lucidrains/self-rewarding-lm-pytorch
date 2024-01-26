@@ -379,7 +379,7 @@ class DPODatasetGenerator(Module):
 
         reward_responses = sample(
             self.model,
-            prompt = reward_prompt,
+            prompts = reward_prompt.long(),
             seq_len = self.generate_reward_max_seq_len,
             temperature = self.eval_temperature,
             filter_fn = top_p, 
@@ -424,9 +424,9 @@ class DPODatasetGenerator(Module):
                 prompt_len = prompt_tensor.shape[-1]
                 repeated_prompt_tensor = repeat(prompt_tensor, 'n -> r n', r = self.num_candidate_responses)
 
-                candidate_responses_tensor = sample(
+                candidate_tensor_responses = sample(
                     self.model,
-                    prompt = repeated_prompt_tensor,
+                    prompts = repeated_prompt_tensor.long(),
                     seq_len = self.preference_max_seq_len,
                     temperature = self.gen_temperature,
                     filter_fn = top_p,
@@ -435,7 +435,8 @@ class DPODatasetGenerator(Module):
                     )
                 )
 
-                candidate_responses: List[str] = [*map(self.tokenizer_decode, candidate_responses_tensor.long().tolist())]
+                candidate_int_responses: List[List[int]] = [response.tolist() for response in candidate_tensor_responses]
+                candidate_responses: List[str] = [*map(self.tokenizer_decode, candidate_int_responses)]
 
                 # get rewards
 
@@ -443,7 +444,7 @@ class DPODatasetGenerator(Module):
 
                 # zip together the responses and rewards and filter out if reward is not generated correctly
 
-                paired_reward_response = [(reward, candidate_response) for reward, candidate_response in zip(rewards, candidate_responses_tensor)]
+                paired_reward_response = [(reward, candidate_response) for reward, candidate_response in zip(rewards, candidate_tensor_responses)]
 
                 paired_reward_response = [*filter(lambda pair: exists(first(pair)), paired_reward_response)]
                 paired_reward_response.sort(key = first)

@@ -50,7 +50,7 @@ def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
 
 def prompt_mask_from_len(lengths, seq):
     seq_len, device = seq.shape[-1], seq.device
-    return torch.arange(seq_len, device = device) < rearrange(prompt_len, '... -> ... 1')
+    return torch.arange(seq_len, device = device) < rearrange(lengths, '... -> ... 1')
 
 def maybe_and_mask(*masks):
     masks = [*filter(exists, masks)]
@@ -97,15 +97,16 @@ class SPIN(Module):
         self,
         generated_seq: TensorType['b', 'n', int],
         real_seq: TensorType['b', 'n', int],
-        prompt_len: Optional[TensorType['b', int]],
+        prompt_len: TensorType['b', int],
         generated_seq_mask: Optional[TensorType['b', 'n', bool]] = None,
         real_seq_mask: Optional[TensorType['b', 'n', bool]] = None
     ):
+        self.policy_model.train()
+
         """
         b - batch
         n - sequence length
         """
-
         assert generated_seq.ndim == real_seq.ndim == 2
 
         real_prompt_mask = torch.arange(real_seq.shape[-1], device = self.device) < prompt_len[:, None]
@@ -194,6 +195,9 @@ class SPINTrainer(Module):
 
         self.spin_λ = spin_λ
 
+    def wait(self):
+        return self.accelerator.wait_for_everyone()
+
     def forward(self):
         """
         Algorithm 1 - https://arxiv.org/abs/2401.01335v1
@@ -214,22 +218,16 @@ class SPINTrainer(Module):
 
                 prompts = [one_real_seq[one_prompt_mask] for one_real_seq, one_prompt_mask in zip(real_seq, prompt_mask)]
 
-                generated_seqs = []
-
-                for prompt in prompts:
-                    one_generated_seq = sample(
-                        self.model,
-                        prompt = rearrange(prompt, '... -> 1 ...'),
-                        seq_len = self.max_seq_len,
-                        temperature = self.temperature,
-                        filter_fn = top_p,
-                        filter_kwargs = dict(
-                            thres = self.nucleus_p
-                        )
+                generated_seqs = sample(
+                    self.model,
+                    prompts = prompts,
+                    seq_len = self.max_seq_len,
+                    temperature = self.temperature,
+                    filter_fn = top_p,
+                    filter_kwargs = dict(
+                        thres = self.nucleus_p
                     )
-
-                    one_generated_seq = rearrange(one_generated_seq, '1 ... -> ...')
-                    generated_seqs.append(torch.cat((prompt, one_generated_seq), dim = -1))
+                )
 
                 generated_seqs = pad_sequence(generated_seqs, padding_value = self.pad_id, batch_first = True)
 

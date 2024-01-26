@@ -73,12 +73,13 @@ trainer(overwrite_checkpoints = True)
 
 ## Todo
 
+- [x] generalize the sampling so that it can progress at different positions in the batch, fix all sampling to be batched. also allow for left padded sequences, in the case some people have transformers with relative positions that allow for that
+- [x] handle eos
+
 - [ ] remove early stopper in favor of just simple few line logic - have a function that accepts List[float] and decide what to do
-- [ ] generalize the sampling so that it can progress at different positions in the batch, fix all sampling to be batched. also allow for left padded sequences, in the case some people have transformers with relative positions that allow for that
 - [ ] figure out how best to handle different impl of kv cache, for now just do without
 - [ ] allow for different strategies for sampling the pairs
 - [ ] consider KTO
-- [ ] handle eos
 - [ ] any order of sft, spin, self-rewarding dpo, dpo with external reward model
 - [ ] show an example for using your own reward prompt instead of default llm-as-judge
 
