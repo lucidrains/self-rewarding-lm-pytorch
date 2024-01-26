@@ -12,6 +12,65 @@ May generalize the framework so one can add <a href="https://arxiv.org/abs/2401.
 
 - <a href="https://a16z.com/supporting-the-open-source-ai-community/">A16Z Open Source AI Grant Program</a> and <a href="https://huggingface.co/">🤗 Huggingface</a> for the generous sponsorships, as well as my other sponsors, for affording me the independence to open source current artificial intelligence research
 
+## Install
+
+``` bash
+$ pip install self-rewarding-lm-pytorch
+```
+
+## Usage
+
+```python
+import torch
+from torch import Tensor
+
+from self_rewarding_lm_pytorch import (
+    SelfRewardingTrainer,
+    create_mock_dataset
+)
+
+from x_transformers import TransformerWrapper, Decoder
+
+transformer = TransformerWrapper(
+    num_tokens = 256,
+    max_seq_len = 1024,
+    attn_layers = Decoder(
+        dim = 512,
+        depth = 1,
+        heads = 8
+    )
+)
+
+SFTDataset = create_mock_dataset(100, lambda: (torch.randint(0, 256, (256,)), torch.tensor(1)))
+PromptDataset = create_mock_dataset(100, lambda: 'mock prompt')
+
+def decode_tokens(tokens: Tensor) -> str:
+    decode_token = lambda token: str(chr(max(32, token)))
+    return ''.join(list(map(decode_token, tokens)))
+
+def encode_str(seq_str: str) -> Tensor:
+    return Tensor(list(map(ord, seq_str)))
+
+trainer = SelfRewardingTrainer(
+    transformer,
+    train_sft_dataset = SFTDataset(),
+    spin = False,
+    num_preference_pairs = [1, 1],
+    preference_max_seq_len = 64,
+    prompt_dataset = PromptDataset(),
+    tokenizer_encode = encode_str,
+    tokenizer_decode = decode_tokens,
+    accelerate_kwargs = dict(
+        cpu = True
+    ),
+    dpo_trainer_kwargs = dict(
+        batch_size = 1
+    )
+)
+
+trainer(overwrite_checkpoints = True)
+```
+
 ## Citation
 
 ```bibtex
