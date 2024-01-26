@@ -215,8 +215,7 @@ class SPINTrainer(Module):
             for real_seq, prompt_len in tqdm(self.train_dataloader, desc = 'spin finetuning'):
 
                 prompt_mask = prompt_mask_from_len(prompt_len, real_seq)
-
-                prompts = [one_real_seq[one_prompt_mask] for one_real_seq, one_prompt_mask in zip(real_seq, prompt_mask)]
+                prompts = real_seq[prompt_mask].split(prompt_len.tolist())
 
                 generated_seqs = sample(
                     self.model,
