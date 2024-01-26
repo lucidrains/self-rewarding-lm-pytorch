@@ -41,6 +41,11 @@ from tqdm import tqdm
 def exists(v):
     return v is not None
 
+def cycle(dl):
+    while True:
+        for batch in dl:
+            yield batch
+
 def freeze_all_layers_(module):
     for param in module.parameters():
         param.requires_grad = False
@@ -51,6 +56,10 @@ def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     seq = rearrange(seq, '... -> ... 1')
     logprobs = probs.gather(-1, seq).clamp(min = eps).log()
     return rearrange(logprobs, '... 1 -> ...')
+
+def prompt_mask_from_len(lengths, seq):
+    seq_len, device = seq.shape[-1], seq.device
+    return torch.arange(seq_len, device = device) < rearrange(prompt_len, '... -> ... 1')
 
 def maybe_and_mask(*masks):
     masks = [*filter(exists, masks)]
@@ -241,8 +250,8 @@ class DPO(Module):
 
         assert preferred_seq.ndim == unpreferred_seq.ndim == 2
 
-        preferred_prompt_mask = torch.arange(preferred_seq.shape[-1], device = self.device) < prompt_len[:, None]
-        unpreferred_prompt_mask = torch.arange(unpreferred_seq.shape[-1], device = self.device) < prompt_len[:, None]
+        preferred_prompt_mask = prompt_mask_from_len(prompt_len, preferred_seq)
+        unpreferred_prompt_mask = prompt_mask_from_len(prompt_len, unpreferred_seq)
 
         """
         Following Appendix B in https://arxiv.org/abs/2305.18290
@@ -280,11 +289,6 @@ class DPO(Module):
         return losses.mean()
 
 # trainer class
-
-def cycle(dl):
-    while True:
-        for batch in dl:
-            yield batch
 
 class DPOTrainer(Module):
     @beartype

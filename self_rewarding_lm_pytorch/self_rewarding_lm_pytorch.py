@@ -70,6 +70,10 @@ def cycle(dl):
         for batch in dl:
             yield batch
 
+def prompt_mask_from_len(length, seq):
+    seq_len, device = seq.shape[-1], seq.device
+    return torch.arange(seq_len, device = device) < rearrange(length, '... -> ... 1')
+
 # constants
 # llm-as-judge prompt
 # https://openreview.net/forum?id=uccHPGDlao
@@ -115,7 +119,7 @@ def default_parse_reward_fn(llm_response: str) -> float:
 class RewardConfig:
     prompt_template: str
     parse_reward: Callable[[str], Optional[float]]
-    render: Optional[Callable[..., str]] = None
+    template_fn: Optional[Callable[..., str]] = None
 
     def init(self):
         prompt_template = self.prompt_template
@@ -206,7 +210,7 @@ class SFTTrainer(Module):
         ]
     ):
         if prompt_len_or_mask.dtype == torch.long:
-            prompt_mask = torch.arange(seq.shape[-1], device = seq.device) < prompt_len_or_mask[..., None]
+            prompt_mask = prompt_mask_from_len(prompt_len_or_mask, seq)
         else:
             prompt_mask = prompt_len_or_mask
 

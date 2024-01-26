@@ -48,6 +48,10 @@ def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     logprobs = probs.gather(-1, seq).clamp(min = eps).log()
     return rearrange(logprobs, '... 1 -> ...')
 
+def prompt_mask_from_len(lengths, seq):
+    seq_len, device = seq.shape[-1], seq.device
+    return torch.arange(seq_len, device = device) < rearrange(prompt_len, '... -> ... 1')
+
 def maybe_and_mask(*masks):
     masks = [*filter(exists, masks)]
     if len(masks) == 0:
@@ -206,7 +210,7 @@ class SPINTrainer(Module):
         for epoch in tqdm(range(self.epochs), desc = 'spin epoch'):
             for real_seq, prompt_len in tqdm(self.train_dataloader, desc = 'spin finetuning'):
 
-                prompt_mask = torch.arange(real_seq.shape[-1], device = real_seq.device) < prompt_len[..., None]
+                prompt_mask = prompt_mask_from_len(prompt_len, real_seq)
 
                 prompts = [one_real_seq[one_prompt_mask] for one_real_seq, one_prompt_mask in zip(real_seq, prompt_mask)]
 
