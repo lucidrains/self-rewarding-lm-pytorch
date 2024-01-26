@@ -14,6 +14,7 @@ from torch.nn import Module, ModuleList
 from torch.utils.data import Dataset, ConcatDataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
+import numpy as np
 from numpy.lib.format import open_memmap
 
 from self_rewarding_lm_pytorch.dpo import (
@@ -38,6 +39,8 @@ from self_rewarding_lm_pytorch.sampling_utils import (
     top_p,
     top_k
 )
+
+from self_rewarding_lm_pytorch.mocks import always
 
 from tqdm import tqdm
 
@@ -66,13 +69,6 @@ def cycle(dl):
     while True:
         for batch in dl:
             yield batch
-
-def always(val):
-    def decorator(fn):
-        def inner(*args, **kwargs):
-            return val
-        return inner
-    return decorator
 
 # constants
 # llm-as-judge prompt
@@ -291,8 +287,10 @@ class DPODatasetGenerator(Module):
         data_folder: str = './',
         preference_seq_memmap_file: str = 'preference_seq.memmap.npy',
         prompt_len_memmap_file: str = 'prompt_len.memmap.npy',
+        self_reward_memmap_file: str = 'self_reward.memmap.npy',
         preference_max_seq_len: int = 1024,
         generate_reward_max_seq_len: int = 256,
+        is_valid_reward_pair: Optional[Callable[[float, float], bool]] = None,
         pad_id: int = -1
     ):
         super().__init__()
@@ -316,6 +314,10 @@ class DPODatasetGenerator(Module):
         self.tokenizer_decode = tokenizer_decode
 
         self.num_evals_to_average = num_evals_to_average
+
+        # logic for sampling the reward pair and to validate it before adding it to generated preference dataset
+
+        self.is_valid_reward_pair = default(is_valid_reward_pair, lambda *args: True)
 
         # shapes and padding
 
@@ -344,9 +346,11 @@ class DPODatasetGenerator(Module):
 
         self.preference_seq_memmap_path = self.data_folder_path / preference_seq_memmap_file
         self.prompt_len_memmap_path = self.data_folder_path / prompt_len_memmap_file
+        self.self_reward_mmemap_path = self.data_folder_path / self_reward_memmap_file
 
         self.preference_seq_memmap = open_memmap(str(self.preference_seq_memmap_path), dtype = 'int', mode = 'w+', shape = memmap_shape)
         self.prompt_len_memmap = open_memmap(str(self.prompt_len_memmap_path), dtype = 'int', mode = 'w+', shape = (num_preference_pairs,))
+        self.self_reward_memmap_file = open_memmap(str(self.self_reward_mmemap_path), dtype = 'float32', mode = 'w+', shape = (num_preference_pairs, 2))
 
     def generate_reward(
         self,
@@ -443,10 +447,10 @@ class DPODatasetGenerator(Module):
                 if len(paired_reward_response) < 2:
                     continue
 
-                preferred_reward, preferred_response = paired_reward_response[0]
-                unpreferred_reward, unpreferred_response = paired_reward_response[-1]
+                unpreferred_reward, unpreferred_response = paired_reward_response[0]
+                preferred_reward, preferred_response = paired_reward_response[1]
 
-                if preferred_reward == unpreferred_reward:
+                if not self.is_valid_reward_pair(preferred_reward, unpreferred_reward):
                     break
 
                 memmap_idx = num_generated
@@ -456,6 +460,7 @@ class DPODatasetGenerator(Module):
 
                 self.prompt_len_memmap[memmap_idx] = prompt_len
                 self.preference_seq_memmap[memmap_idx] = paired_responses.cpu().numpy()
+                self.self_reward_memmap_file[memmap_idx] = np.array([preferred_reward, unpreferred_reward])
 
                 num_generated += 1
                 pbar.update(1)
@@ -470,7 +475,7 @@ class DPODatasetGenerator(Module):
 
         return DPODataset(**self.dpo_dataset_kwargs)
 
-# fine tuning class
+# self-rewarding trainer class
 
 class SelfRewardingTrainer(Module):
     @beartype
@@ -512,6 +517,7 @@ class SelfRewardingTrainer(Module):
         dpo_trainer_kwargs: dict = dict(),
         dropout: float = 0.1,
         checkpoints_folder: str = './checkpoints',
+        is_valid_reward_pair: Optional[Callable[[float, float], bool]] = lambda preferred_reward, unpreferred_reward: preferred_reward != unpreferred_reward,
         pad_id: int = -1
     ):
         super().__init__()
@@ -580,6 +586,7 @@ class SelfRewardingTrainer(Module):
                 preference_max_seq_len = preference_max_seq_len,
                 tokenizer_encode = tokenizer_encode,
                 tokenizer_decode = tokenizer_decode,
+                is_valid_reward_pair = is_valid_reward_pair,
                 **reward_generator_kwargs
             ) for reward_config, one_stage_num_preference_pairs in zip(self.reward_prompt_configs, num_preference_pairs)
         ]

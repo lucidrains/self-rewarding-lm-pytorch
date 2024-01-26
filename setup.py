@@ -22,7 +22,7 @@ setup(
     'einops>=0.7.0',
     'Jinja2',
     'numpy',
-    'pytorch-custom-utils>=0.0.14',
+    'pytorch-custom-utils>=0.0.15',
     'torch>=2.0',
     'torchtyping',
     'tqdm'

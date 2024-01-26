@@ -368,7 +368,7 @@ class DPOTrainer(Module):
             pbar.update(1)
             self.accelerator.wait_for_everyone()
 
-            if not (self.steps % self.check_early_stop_every):
+            if not (self.steps % self.check_early_stop_every) and exists(self.early_stopper):
 
                 early_stop_return = self.early_stopper()
 
