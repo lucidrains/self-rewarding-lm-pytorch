@@ -620,6 +620,13 @@ class SelfRewardingTrainer(Module):
         checkpoints_folder.mkdir(parents = True, exist_ok = True)
         self.checkpoints_folder = checkpoints_folder
 
+    @property
+    def unwrapped_model(self):
+        return self.accelerator.unwrap_model(self.model)
+
+    def print(self, *msg):
+        self.accelerator.print(*msg)
+
     def wait(self):
         return self.accelerator.wait_for_everyone()
 
@@ -632,7 +639,7 @@ class SelfRewardingTrainer(Module):
         assert not path.exists() or overwrite, f'file already exists'
 
         pkg = dict(
-            model = self.model.state_dict()
+            model = self.unwrapped_model.state_dict()
         )
 
         torch.save(pkg, str(path))

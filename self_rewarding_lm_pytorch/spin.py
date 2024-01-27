@@ -1,3 +1,4 @@
+from pathlib import Path
 from copy import deepcopy
 
 from beartype import beartype
@@ -43,10 +44,10 @@ def freeze_all_layers_(module):
 
 def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     logits = model(seq)
-    probs = logits.softmax(dim = -1)
+    log_probs = logits.log_softmax(dim = -1)
     seq = rearrange(seq, '... -> ... 1')
-    logprobs = probs.gather(-1, seq).clamp(min = eps).log()
-    return rearrange(logprobs, '... 1 -> ...')
+    log_probs = log_probs.gather(-1, seq)
+    return rearrange(log_probs, '... 1 -> ...')
 
 def prompt_mask_from_len(lengths, seq):
     seq_len, device = seq.shape[-1], seq.device
@@ -148,9 +149,10 @@ class SPINTrainer(Module):
     def __init__(
         self,
         model: Module,
+        *,
         sft_dataset: Dataset,
-        accelerator: Accelerator,
         max_seq_len: int,
+        accelerator: Optional[Accelerator] = None,
         accelerator_kwargs: dict = dict(),
         batch_size = 16,
         epochs = 2,
@@ -159,7 +161,9 @@ class SPINTrainer(Module):
         temperature = 0.7,
         nucleus_p = 0.9,
         pad_id: int = -1,
-        spin_λ = 0.1
+        spin_λ = 0.1,
+        checkpoint_every = None,
+        checkpoint_folder = './spin-checkpoints'
     ):
         super().__init__()
 
@@ -195,14 +199,50 @@ class SPINTrainer(Module):
 
         self.spin_λ = spin_λ
 
+        # checkpointing
+
+        self.should_checkpoint = exists(checkpoint_every)
+        self.checkpoint_every = checkpoint_every
+
+        if self.should_checkpoint:
+            self.checkpoint_folder = Path(checkpoint_folder)
+            self.checkpoint_folder.mkdir(exist_ok = True, parents = True)
+
+        self.steps = 0
+
+    @property
+    def unwrapped_model(self):
+        return self.accelerator.unwrap_model(self.model)
+
+    def print(self, *msg):
+        self.accelerator.print(*msg)
+
+    def log(self, **data):
+        self.accelerator.log(data, step = self.steps)
+
     def wait(self):
         return self.accelerator.wait_for_everyone()
+
+    def save(self, path: str, overwrite: bool = False):
+        if not self.accelerator.is_main_process:
+            return
+
+        path = self.checkpoint_folder / path
+
+        assert not path.exists() or overwrite, f'file already exists'
+
+        pkg = dict(
+            model = self.unwrapped_model.state_dict()
+        )
+
+        torch.save(pkg, str(path))
 
     def forward(self):
         """
         Algorithm 1 - https://arxiv.org/abs/2401.01335v1
         """
 
+        self.steps = 0
         self.model.train()
 
         spin = SPIN(
@@ -225,10 +265,9 @@ class SPINTrainer(Module):
                     filter_fn = top_p,
                     filter_kwargs = dict(
                         thres = self.nucleus_p
-                    )
+                    ),
+                    output_keep_prompt = True
                 )
-
-                generated_seqs = pad_sequence(generated_seqs, padding_value = self.pad_id, batch_first = True)
 
                 spin_loss = spin(
                     real_seq = real_seq,
@@ -236,9 +275,22 @@ class SPINTrainer(Module):
                     prompt_len = prompt_len
                 )
 
+                self.print(f'spin loss: {spin_loss.item():.3f}')
+                self.log(loss = spin_loss.item())
+
                 self.accelerator.backward(spin_loss)
 
                 self.optimizer.step()
                 self.optimizer.zero_grad()
+
+                self.steps += 1
+
+                self.wait()
+
+                if self.should_checkpoint and not (self.checkpoint_every % self.steps):
+                    checkpoint_num = self.steps // self.checkpoint_every
+                    self.save(f'spin.ckpt.{checkpoint_num}.pt')
+
+                self.wait()
 
         print(f'self-play training complete')

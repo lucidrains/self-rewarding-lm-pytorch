@@ -6,7 +6,7 @@ Implementation of the training framework proposed in <a href="https://arxiv.org/
 
 They really took the <a href="https://arxiv.org/abs/2305.18290">title of the DPO paper</a> to heart.
 
-May generalize the framework so one can add <a href="https://arxiv.org/abs/2401.01335v1">SPIN</a> as well.
+This library also contains an implementation of <a href="https://arxiv.org/abs/2401.01335v1">SPIN</a>, which <a href="https://github.com/teknium1">Teknium</a> of <a href="https://twitter.com/nousresearch">Nous Research</a> has expressed optimism for.
 
 ## Appreciation
 
@@ -69,6 +69,41 @@ trainer = SelfRewardingTrainer(
 )
 
 trainer(overwrite_checkpoints = True)
+```
+
+SPIN can be trained standalone as shown below
+
+```python
+import torch
+
+from self_rewarding_lm_pytorch import (
+    SPINTrainer,
+    create_mock_dataset
+)
+
+from x_transformers import TransformerWrapper, Decoder
+
+transformer = TransformerWrapper(
+    num_tokens = 256,
+    max_seq_len = 1024,
+    attn_layers = Decoder(
+        dim = 512,
+        depth = 6,
+        heads = 8
+    )
+)
+
+SFTDataset = create_mock_dataset(100, lambda: (torch.randint(0, 256, (256,)), torch.tensor(1)))
+
+spin_trainer = SPINTrainer(
+    transformer,
+    max_seq_len = 16,
+    sft_dataset = SFTDataset(),
+    spin_λ = 0.1,
+    checkpoint_every = 100
+)
+
+spin_trainer()
 ```
 
 ## Todo

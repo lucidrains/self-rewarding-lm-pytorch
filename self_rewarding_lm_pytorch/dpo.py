@@ -52,10 +52,10 @@ def freeze_all_layers_(module):
 
 def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     logits = model(seq)
-    probs = logits.softmax(dim = -1)
+    log_probs = logits.softmax(dim = -1)
     seq = rearrange(seq, '... -> ... 1')
-    logprobs = probs.gather(-1, seq).clamp(min = eps).log()
-    return rearrange(logprobs, '... 1 -> ...')
+    log_probs = log_probs.gather(-1, seq)
+    return rearrange(log_probs, '... 1 -> ...')
 
 def prompt_mask_from_len(lengths, seq):
     seq_len, device = seq.shape[-1], seq.device

@@ -65,6 +65,7 @@ def sample(
     filter_kwargs: dict = dict(),
     pad_id: int = -1,
     eos_id: Optional[int] = None,
+    output_keep_prompt = False
 ):
     device = next(net.parameters()).device
     net.eval()
@@ -114,6 +115,9 @@ def sample(
         is_eos_mask = out == eos_id
         after_eos_mask = F.pad(is_eos_mask.cumsum(dim = -1) > 0, (1, -1), value = False)
         out = out.masked_fill_(after_eos_mask, pad_id)
+
+    if output_keep_prompt:
+        return out
 
     prompt_mask = torch.arange(out.shape[-1], device = device) < prompt_lens[..., None]
 
