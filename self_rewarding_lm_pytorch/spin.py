@@ -16,13 +16,12 @@ from accelerate import Accelerator
 
 from einops import rearrange
 
-from pytorch_custom_utils import (
-    get_adam_optimizer,
-    OptimizerWithWarmupSchedule
-)
-
 from pytorch_custom_utils.utils import (
     masked_mean
+)
+
+from self_rewarding_lm_pytorch.dpo import (
+    adam_optimizer_with_linear_decay
 )
 
 from self_rewarding_lm_pytorch.sampling_utils import (
@@ -156,8 +155,11 @@ class SPINTrainer(Module):
         accelerator_kwargs: dict = dict(),
         batch_size = 16,
         epochs = 2,
-        learning_rate = 3e-4,
+        start_learning_rate = 1e-6,
+        end_learning_rate = 1e-7,
+        learning_rate_num_decay_steps = 1000,
         weight_decay = 0.,
+        adam_kwargs: dict = dict(),
         temperature = 0.7,
         nucleus_p = 0.9,
         pad_id: int = -1,
@@ -175,13 +177,14 @@ class SPINTrainer(Module):
         self.epochs = epochs
         self.train_dataloader = DataLoader(sft_dataset, batch_size = batch_size, shuffle = True, drop_last = True)
 
-        self.optimizer = OptimizerWithWarmupSchedule(
-            optimizer = get_adam_optimizer(
-                model.parameters(),
-                lr = learning_rate,
-                wd = weight_decay
-            ),
-            accelerator = self.accelerator
+        self.optimizer = adam_optimizer_with_linear_decay(
+            model,
+            start_learning_rate,
+            end_learning_rate,
+            num_decay_steps = learning_rate_num_decay_steps,
+            accelerator = self.accelerator,
+            weight_decay = weight_decay,
+            adam_kwargs = adam_kwargs
         )
 
         (
@@ -237,7 +240,7 @@ class SPINTrainer(Module):
 
         torch.save(pkg, str(path))
 
-    def forward(self):
+    def forward(self, overwrite_checkpoints: bool = True):
         """
         Algorithm 1 - https://arxiv.org/abs/2401.01335v1
         """
@@ -289,7 +292,7 @@ class SPINTrainer(Module):
 
                 if self.should_checkpoint and not (self.checkpoint_every % self.steps):
                     checkpoint_num = self.steps // self.checkpoint_every
-                    self.save(f'spin.ckpt.{checkpoint_num}.pt')
+                    self.save(f'spin.ckpt.{checkpoint_num}.pt', overwrite = overwrite_checkpoints)
 
                 self.wait()
 

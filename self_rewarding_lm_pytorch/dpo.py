@@ -52,7 +52,7 @@ def freeze_all_layers_(module):
 
 def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     logits = model(seq)
-    log_probs = logits.softmax(dim = -1)
+    log_probs = logits.log_softmax(dim = -1)
     seq = rearrange(seq, '... -> ... 1')
     log_probs = log_probs.gather(-1, seq)
     return rearrange(log_probs, '... 1 -> ...')
@@ -92,6 +92,10 @@ def adam_optimizer_with_linear_decay(
         lr = start_learning_rate,
         wd = weight_decay
     )
+
+    scheduler = None
+    if start_learning_rate != end_learning_rate:
+        scheduler = LinearLR
 
     return OptimizerWithWarmupSchedule(
         optimizer = adam,
