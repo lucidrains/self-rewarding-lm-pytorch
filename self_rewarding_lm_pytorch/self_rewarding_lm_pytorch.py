@@ -111,6 +111,9 @@ def default_parse_reward_fn(llm_response: str) -> float:
     if not exists(result) or result.groups == 0:
         return None
 
+    if not result.groups(1).isnumeric():
+        return None
+
     return float(result.groups(1))
 
 # reward config
