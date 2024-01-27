@@ -71,7 +71,7 @@ trainer = SelfRewardingTrainer(
 trainer(overwrite_checkpoints = True)
 ```
 
-SPIN can be trained standalone as shown below
+SPIN can either enabled on `SelfRewardingTrainer` with the `spin = True` flag, or trained standalone as shown below
 
 ```python
 import torch
