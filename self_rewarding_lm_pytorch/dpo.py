@@ -18,6 +18,7 @@ import torch.distributed as dist
 from accelerate import Accelerator
 
 from einops import rearrange
+from einx import get_at
 
 from numpy.lib.format import open_memmap
 
@@ -53,9 +54,7 @@ def freeze_all_layers_(module):
 def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
     logits = model(seq)
     log_probs = logits.log_softmax(dim = -1)
-    seq = rearrange(seq, '... -> ... 1')
-    log_probs = log_probs.gather(-1, seq)
-    return rearrange(log_probs, '... 1 -> ...')
+    return get_at('b n [c], b n -> b n', log_probs, seq)
 
 def prompt_mask_from_len(lengths, seq):
     seq_len, device = seq.shape[-1], seq.device
