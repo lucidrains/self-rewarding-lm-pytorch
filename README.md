@@ -142,7 +142,7 @@ trainer = SelfRewardingTrainer(
 - [x] show an example for using your own reward prompt instead of default llm-as-judge
 
 - [ ] allow for a validation function on the rewards (say reward must be integer, float, in between some range etc)
-- [ ] remove early stopper in favor of just simple few line logic - have a function that accepts List[float] and decide what to do
+- [ ] early stopper should accept an evaluation module that takes in the model and outputs a score, should also accept whether to do it distributed or all on the main process (in which case distributed break signal needs to be handled correctly)
 - [ ] figure out how best to handle different impl of kv cache, for now just do without
 - [ ] allow for different strategies for sampling the pairs
 - [ ] consider KTO
