@@ -106,17 +106,49 @@ spin_trainer = SPINTrainer(
 spin_trainer()
 ```
 
+Say you want to experiment with your own reward prompt (other than LLM-as-Judge). First you need to import the `RewardConfig`, next pass it into the trainer as `reward_prompt_config`
+
+```python
+
+# first import
+
+from self_rewarding_lm_pytorch import RewardConfig
+
+# then say you want to try asking the transformer nicely
+
+trainer = SelfRewardingTrainer(
+    transformer,
+    ...,
+    reward_prompt_config = dict(
+        default = RewardConfig(
+            prompt_template = """
+            Pretty please rate the following user prompt and response
+            User: {{ prompt }}
+            Response: {{ response }}
+
+            Format your score as follows:
+            Rating: <rating as integer from 0 - 10>
+            """,
+            reward_template = """
+            Rating: {{ reward }}
+            """
+        )
+    )
+)
+```
+
 ## Todo
 
 - [x] generalize the sampling so that it can progress at different positions in the batch, fix all sampling to be batched. also allow for left padded sequences, in the case some people have transformers with relative positions that allow for that
 - [x] handle eos
+- [x] show an example for using your own reward prompt instead of default llm-as-judge
 
+- [ ] allow for a validation function on the rewards (say reward must be integer, float, in between some range etc)
 - [ ] remove early stopper in favor of just simple few line logic - have a function that accepts List[float] and decide what to do
 - [ ] figure out how best to handle different impl of kv cache, for now just do without
 - [ ] allow for different strategies for sampling the pairs
 - [ ] consider KTO
 - [ ] any order of sft, spin, self-rewarding dpo, dpo with external reward model
-- [ ] show an example for using your own reward prompt instead of default llm-as-judge
 
 ## Citation
 
