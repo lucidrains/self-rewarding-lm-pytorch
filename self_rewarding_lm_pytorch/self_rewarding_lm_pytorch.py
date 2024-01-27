@@ -105,29 +105,50 @@ necessary. To evaluate the response in alignment with this additive scoring mode
 systematically attribute points based on the outlined criteria.
 """
 
-def default_parse_reward_fn(llm_response: str) -> float:
-    result = re.search(r"Score: ([0-9\.]+)", llm_response)
+DEFAULT_REWARD_TEMPLATE = """
+Score: {{ reward }}
+"""
 
-    if not exists(result) or result.groups == 0:
-        return None
+def create_parse_reward_fn(reward_template):
+    assert find_variables_from_jinja_template(reward_template) == {'reward'}, 'reward template must include "score" variable'
+    reward_regex_str = jinja2_env.from_string(reward_template).render(score = "([0-9\.]+)")
 
-    if not result.groups(1).isnumeric():
-        return None
+    def parse_reward_fn(llm_response: str) -> float:
+        result = re.search(rf"{reward_regex_str}", llm_response)
 
-    return float(result.groups(1))
+        if not exists(result) or result.groups == 0:
+            return None
+
+        if not result.groups(1).isnumeric():
+            return None
+
+        return float(result.groups(1))
+
+    return parse_reward_fn
 
 # reward config
 
 @dataclass
 class RewardConfig:
     prompt_template: str
-    parse_reward: Callable[[str], Optional[float]]
+    reward_template: Optional[str] = None
+    parse_reward: Optional[Callable[[str], Optional[float]]] = None
     template_fn: Optional[Callable[..., str]] = None
 
     def init(self):
+
+        # initialize render function for prompt and response template
+
         prompt_template = self.prompt_template
         assert find_variables_from_jinja_template(prompt_template) == {'prompt', 'response'}, 'template must include prompt and response templating variables'
         self.template_fn = jinja2_env.from_string(prompt_template).render
+
+        # initialize the parse_reward if only the reward regex template is given
+
+        if not exists(self.parse_reward):
+            assert exists(self.reward_template), 'reward_template must be given if parse_reward is not passed in'
+            self.parse_reward = create_parse_reward_fn(self.reward_template)
+
         return self
 
 # config, allowing for different types of reward prompting
@@ -136,7 +157,7 @@ class RewardConfig:
 REWARD_PROMPT_CONFIG = dict(
     default = RewardConfig(
         prompt_template = DEFAULT_LLM_AS_JUDGE_PROMPT,
-        parse_reward = default_parse_reward_fn
+        reward_template = DEFAULT_REWARD_TEMPLATE
     )
 )
 
