@@ -524,7 +524,7 @@ class SelfRewardingTrainer(Module):
         beta = 0.1,
         preference_max_seq_len: int = 1024,
         self_reward_num_iterations = 2,
-        reward_prompt_config: Dict[str, RewardConfig] = REWARD_PROMPT_CONFIG,
+        reward_prompt_config: Union[RewardConfig, Dict[str, RewardConfig]] = REWARD_PROMPT_CONFIG,
         reward_iteration_type = [
             'default',
             'default'
@@ -553,6 +553,9 @@ class SelfRewardingTrainer(Module):
         pad_id: int = -1
     ):
         super().__init__()
+
+        if isinstance(reward_prompt_config, RewardConfig):
+            reward_prompt_config = dict(default = reward_prompt_config)
 
         assert all([key in reward_prompt_config for key in reward_iteration_type]), f'reward prompt must be one of {reward_prompt_config.keys()}'
 

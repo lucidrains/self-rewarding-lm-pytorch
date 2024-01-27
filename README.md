@@ -119,20 +119,18 @@ from self_rewarding_lm_pytorch import RewardConfig
 trainer = SelfRewardingTrainer(
     transformer,
     ...,
-    reward_prompt_config = dict(
-        default = RewardConfig(
-            prompt_template = """
-            Pretty please rate the following user prompt and response
-            User: {{ prompt }}
-            Response: {{ response }}
+    reward_prompt_config = RewardConfig(
+        prompt_template = """
+        Pretty please rate the following user prompt and response
+        User: {{ prompt }}
+        Response: {{ response }}
 
-            Format your score as follows:
-            Rating: <rating as integer from 0 - 10>
-            """,
-            reward_template = """
-            Rating: {{ reward }}
-            """
-        )
+        Format your score as follows:
+        Rating: <rating as integer from 0 - 10>
+        """,
+        reward_template = """
+        Rating: {{ reward }}
+        """
     )
 )
 ```
