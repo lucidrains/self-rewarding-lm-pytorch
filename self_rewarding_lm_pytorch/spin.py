@@ -106,7 +106,6 @@ class SPIN(Module):
         b - batch
         n - sequence length
         """
-        assert generated_seq.ndim == real_seq.ndim == 2
 
         real_prompt_mask = torch.arange(real_seq.shape[-1], device = self.device) < prompt_len[:, None]
         generated_prompt_mask = torch.arange(generated_seq.shape[-1], device = self.device) < prompt_len[:, None]

@@ -253,8 +253,6 @@ class DPO(Module):
         n - sequence length
         """
 
-        assert preferred_seq.ndim == unpreferred_seq.ndim == 2
-
         preferred_prompt_mask = prompt_mask_from_len(prompt_len, preferred_seq)
         unpreferred_prompt_mask = prompt_mask_from_len(prompt_len, unpreferred_seq)
 
@@ -301,7 +299,8 @@ class DPOTrainer(Module):
         self,
         dpo: DPO,
         *,
-        accelerator: Accelerator,
+        accelerator: Optional[Accelerator],
+        accelerate_kwargs: dict = dict(),
         batch_size: int = 16,
         num_decay_steps: int = 1000,
         learning_rate: float = 3e-4,
@@ -317,7 +316,11 @@ class DPOTrainer(Module):
         super().__init__()
         set_dropout_(dpo, dropout)
 
+        if not exists(accelerator):
+            accelerator = Accelerator(**accelerate_kwrags)
+
         self.accelerator = accelerator
+
         self.model = accelerator.prepare(dpo)
 
         self.batch_size = batch_size
