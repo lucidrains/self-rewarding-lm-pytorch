@@ -377,6 +377,7 @@ class DPOTrainer(Module):
             dpo_loss = self.model(*batch)
             self.accelerator.backward(dpo_loss)
 
+            self.print(f'dpo loss: {dpo_loss.item():.3f}')
             self.log(loss = dpo_loss.item())
 
             self.optimizer.step()
@@ -390,6 +391,7 @@ class DPOTrainer(Module):
 
                 early_stop_return = self.early_stopper()
 
+                self.print(f'valid dpo loss: {early_stop_return.score:.3f}')
                 self.log(dpo_valid_score = early_stop_return.score)
 
                 if self.is_main and early_stop_return.should_stop:
@@ -402,4 +404,4 @@ class DPOTrainer(Module):
             self.wait()
 
         pbar.close()
-        print('dpo training finished')
+        self.print('dpo training finished')

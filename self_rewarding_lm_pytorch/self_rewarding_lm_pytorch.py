@@ -535,7 +535,8 @@ class SelfRewardingTrainer(Module):
         valid_sft_dataset: Optional[Dataset] = None,
         initial_sft: bool = True,
         spin: bool = False,
-        beta = 0.1,
+        dpo_beta = 0.1,
+        spin_λ  = 0.1,
         preference_max_seq_len: int = 1024,
         self_reward_num_iterations = 2,
         reward_prompt_config: Union[RewardConfig, Dict[str, RewardConfig]] = REWARD_PROMPT_CONFIG,
@@ -618,6 +619,8 @@ class SelfRewardingTrainer(Module):
                 accelerator = self.accelerator,
                 sft_dataset = train_sft_dataset,
                 max_seq_len = spin_trainer_kwargs.pop('max_seq_len', preference_max_seq_len),
+                spin_λ = spin_λ,
+                pad_id = pad_id,
                 **spin_trainer_kwargs
             )
 
@@ -645,7 +648,7 @@ class SelfRewardingTrainer(Module):
         set_dropout_(model, dropout)
         self.dpo = DPO(
             model,
-            beta = beta,
+            beta = dpo_beta,
             pad_id = pad_id
         )
 
@@ -729,4 +732,4 @@ class SelfRewardingTrainer(Module):
 
             self.wait()
 
-        print(f'done')
+        self.print(f'done')

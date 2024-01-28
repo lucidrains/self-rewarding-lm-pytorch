@@ -294,4 +294,4 @@ class SPINTrainer(Module):
 
                 self.wait()
 
-        print(f'self-play training complete')
+        self.print(f'self-play training complete')
