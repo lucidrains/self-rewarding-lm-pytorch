@@ -116,9 +116,12 @@ from self_rewarding_lm_pytorch import RewardConfig
 
 # then say you want to try asking the transformer nicely
 
+# reward_regex_template is the string that will be looked for in the LLM response, for parsing out the reward where {{ reward }} is defined as a number
+
 trainer = SelfRewardingTrainer(
     transformer,
     ...,
+    num_candidate_responses = 4,           # in the paper, they try 4 responses, and pick the max and min rewards for forming the preference pairs
     reward_prompt_config = RewardConfig(
         prompt_template = """
         Pretty please rate the following user prompt and response
@@ -128,7 +131,7 @@ trainer = SelfRewardingTrainer(
         Format your score as follows:
         Rating: <rating as integer from 0 - 10>
         """,
-        reward_template = """
+        reward_regex_template = """
         Rating: {{ reward }}
         """
     )
