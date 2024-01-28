@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'self-rewarding-lm-pytorch',
   packages = find_packages(exclude=[]),
-  version = '0.0.17',
+  version = '0.0.18',
   license='MIT',
   description = 'Self Rewarding LM - Pytorch',
   author = 'Phil Wang',
@@ -20,7 +20,7 @@ setup(
     'accelerate',
     'beartype',
     'einops>=0.7.0',
-    'einx>=0.1.2',
+    'einx[torch]>=0.1.3',
     'Jinja2',
     'numpy',
     'pytorch-custom-utils>=0.0.16',
