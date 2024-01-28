@@ -2,6 +2,8 @@ import re
 from copy import deepcopy
 from pathlib import Path
 from dataclasses import dataclass
+from functools import wraps
+from textwrap import dedent
 
 from beartype import beartype
 from beartype.typing import Optional, Dict, List, Union, Callable
@@ -70,6 +72,9 @@ def cycle(dl):
         for batch in dl:
             yield batch
 
+def identity(t, *args, **kwargs):
+    return t
+
 def prompt_mask_from_len(length, seq):
     seq_len, device = seq.shape[-1], seq.device
     return torch.arange(seq_len, device = device) < rearrange(length, '... -> ... 1')
@@ -134,8 +139,17 @@ class RewardConfig:
     reward_template: Optional[str] = None
     parse_reward: Optional[Callable[[str], Optional[float]]] = None
     template_fn: Optional[Callable[..., str]] = None
+    auto_dedent: bool = True
 
     def init(self):
+
+        # maybe dedent
+
+        if self.auto_dedent:
+            self.prompt_template = dedent(self.prompt_template)
+
+            if exists(self.reward_template):
+                self.reward_template = dedent(self.reward_template)
 
         # initialize render function for prompt and response template
 
