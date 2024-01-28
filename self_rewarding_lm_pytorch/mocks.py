@@ -16,7 +16,7 @@ def always(val):
 def create_mock_dataset(
     length: int,
     output: Any
-) -> Type[Dataset]:
+) -> Dataset:
 
     class MockDataset(Dataset):
         def __len__(self):
@@ -28,4 +28,4 @@ def create_mock_dataset(
 
             return output
 
-    return MockDataset
+    return MockDataset()

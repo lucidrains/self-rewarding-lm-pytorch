@@ -137,10 +137,12 @@ class SPINTrainer(Module):
         self,
         model: Module,
         *,
-        sft_dataset: Dataset,
+        train_sft_dataset: Dataset,
         max_seq_len: int,
+        valid_sft_dataset: Optional[Dataset] = None,
+        valid_every = 100,
         accelerator: Optional[Accelerator] = None,
-        accelerator_kwargs: dict = dict(),
+        accelerate_kwargs: dict = dict(),
         batch_size = 16,
         epochs = 2,
         start_learning_rate = 1e-6,
@@ -159,11 +161,11 @@ class SPINTrainer(Module):
 
         self.accelerator = accelerator
         if not exists(self.accelerator):
-            self.accelerator = Accelerator(**accelerator_kwargs)
+            self.accelerator = Accelerator(**accelerate_kwargs)
 
         self.model = model
         self.epochs = epochs
-        self.train_dataloader = DataLoader(sft_dataset, batch_size = batch_size, shuffle = True, drop_last = True)
+        self.train_dataloader = DataLoader(train_sft_dataset, batch_size = batch_size, shuffle = True, drop_last = True)
 
         self.optimizer = adam_optimizer_with_linear_decay(
             model,
@@ -190,6 +192,14 @@ class SPINTrainer(Module):
 
         self.spin_λ = spin_λ
 
+        # validation
+
+        self.valid_dataloader = None
+        self.valid_every = valid_every
+
+        if exists(valid_sft_dataset):
+            self.valid_dataloader = DataLoader(valid_sft_dataset, batch_size = batch_size)
+
         # checkpointing
 
         self.should_checkpoint = exists(checkpoint_every)
@@ -200,6 +210,10 @@ class SPINTrainer(Module):
             self.checkpoint_folder.mkdir(exist_ok = True, parents = True)
 
         self.steps = 0
+
+    @property
+    def is_main(self):
+        return self.accelerator.is_main_process
 
     @property
     def unwrapped_model(self):
@@ -215,7 +229,7 @@ class SPINTrainer(Module):
         return self.accelerator.wait_for_everyone()
 
     def save(self, path: str, overwrite: bool = False):
-        if not self.accelerator.is_main_process:
+        if not self.is_main:
             return
 
         path = self.checkpoint_folder / path
@@ -227,6 +241,35 @@ class SPINTrainer(Module):
         )
 
         torch.save(pkg, str(path))
+
+    def calc_spin_loss(
+        self,
+        spin: Module,
+        real_seq: TensorType['b', 'n', int],
+        prompt_len: TensorType['b', int]
+    ):
+        prompt_mask = prompt_mask_from_len(prompt_len, real_seq)
+        prompts = real_seq[prompt_mask].split(prompt_len.tolist())
+
+        generated_seqs = sample(
+            self.model,
+            prompts = prompts,
+            seq_len = self.max_seq_len,
+            temperature = self.temperature,
+            filter_fn = top_p,
+            filter_kwargs = dict(
+                thres = self.nucleus_p
+            ),
+            output_keep_prompt = True
+        )
+
+        spin_loss = spin(
+            real_seq = real_seq,
+            generated_seq = generated_seqs,
+            prompt_len = prompt_len
+        )
+
+        return spin_loss
 
     def forward(self, overwrite_checkpoints: bool = True):
         """
@@ -245,31 +288,14 @@ class SPINTrainer(Module):
         for epoch in tqdm(range(self.epochs), desc = 'spin epoch'):
             for real_seq, prompt_len in tqdm(self.train_dataloader, desc = 'spin finetuning'):
 
-                prompt_mask = prompt_mask_from_len(prompt_len, real_seq)
-                prompts = real_seq[prompt_mask].split(prompt_len.tolist())
+                spin.train()
 
-                generated_seqs = sample(
-                    self.model,
-                    prompts = prompts,
-                    seq_len = self.max_seq_len,
-                    temperature = self.temperature,
-                    filter_fn = top_p,
-                    filter_kwargs = dict(
-                        thres = self.nucleus_p
-                    ),
-                    output_keep_prompt = True
-                )
+                train_loss = self.calc_spin_loss(spin, real_seq, prompt_len)
 
-                spin_loss = spin(
-                    real_seq = real_seq,
-                    generated_seq = generated_seqs,
-                    prompt_len = prompt_len
-                )
+                self.print(f'train spin loss: {train_loss.item():.3f}')
+                self.log(loss = train_loss.item())
 
-                self.print(f'spin loss: {spin_loss.item():.3f}')
-                self.log(loss = spin_loss.item())
-
-                self.accelerator.backward(spin_loss)
+                self.accelerator.backward(train_loss)
 
                 self.optimizer.step()
                 self.optimizer.zero_grad()
@@ -278,10 +304,36 @@ class SPINTrainer(Module):
 
                 self.wait()
 
+                if exists(self.valid_dataloader) and not (self.valid_every % self.steps):
+                    self.wait()
+
+                    if self.is_main:
+                        total_loss = 0.
+                        total_batches = 0.
+
+                        with torch.no_grad():
+                            spin.eval()
+
+                            for valid_seq, prompt_len in tqdm(self.valid_dataloader, desc = 'valid spin'):
+                                batch = valid_seq.shape[0]
+                                valid_spin_loss = self.calc_spin_loss(spin, valid_seq, prompt_len)
+
+                                total_batches += batch
+                                total_loss = valid_spin_loss * batch
+
+                            valid_loss = total_loss / total_batches
+
+                            self.print(f'valid spin loss: {valid_loss.item():.3f}')
+                            self.log(valid_spin_loss = valid_loss.item())
+
+                    self.wait()
+
                 if self.should_checkpoint and not (self.checkpoint_every % self.steps):
+                    self.wait()
+
                     checkpoint_num = self.steps // self.checkpoint_every
                     self.save(f'spin.ckpt.{checkpoint_num}.pt', overwrite = overwrite_checkpoints)
 
-                self.wait()
+                    self.wait()
 
         self.print(f'self-play training complete')

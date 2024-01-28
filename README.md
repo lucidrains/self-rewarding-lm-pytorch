@@ -41,8 +41,8 @@ transformer = TransformerWrapper(
     )
 )
 
-SFTDataset = create_mock_dataset(100, lambda: (torch.randint(0, 256, (256,)), torch.tensor(1)))
-PromptDataset = create_mock_dataset(100, lambda: 'mock prompt')
+sft_train_dataset = create_mock_dataset(100, lambda: (torch.randint(0, 256, (256,)), torch.tensor(1)))
+prompt_dataset = create_mock_dataset(100, lambda: 'mock prompt')
 
 def decode_tokens(tokens: Tensor) -> str:
     decode_token = lambda token: str(chr(max(32, token)))
@@ -53,11 +53,11 @@ def encode_str(seq_str: str) -> Tensor:
 
 trainer = SelfRewardingTrainer(
     transformer,
-    train_sft_dataset = SFTDataset(),
+    train_sft_dataset = sft_train_dataset,
     num_spin_cycles = 0,
     num_preference_pairs = [1, 1],
     preference_max_seq_len = 64,
-    prompt_dataset = PromptDataset(),
+    prompt_dataset = prompt_dataset,
     tokenizer_encode = encode_str,
     tokenizer_decode = decode_tokens,
     accelerate_kwargs = dict(
@@ -93,12 +93,12 @@ transformer = TransformerWrapper(
     )
 )
 
-SFTDataset = create_mock_dataset(100, lambda: (torch.randint(0, 256, (256,)), torch.tensor(1)))
+sft_dataset = create_mock_dataset(100, lambda: (torch.randint(0, 256, (256,)), torch.tensor(1)))
 
 spin_trainer = SPINTrainer(
     transformer,
     max_seq_len = 16,
-    sft_dataset = SFTDataset(),
+    sft_dataset = sft_dataset,
     spin_λ = 0.1,
     checkpoint_every = 100
 )
