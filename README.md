@@ -143,13 +143,13 @@ trainer = SelfRewardingTrainer(
 - [x] generalize the sampling so that it can progress at different positions in the batch, fix all sampling to be batched. also allow for left padded sequences, in the case some people have transformers with relative positions that allow for that
 - [x] handle eos
 - [x] show an example for using your own reward prompt instead of default llm-as-judge
+- [x] allow for different strategies for sampling the pairs
 
-- [ ] allow for a validation function on the rewards (say reward must be integer, float, in between some range etc)
 - [ ] early stopper should accept an evaluation module that takes in the model and outputs a score, should also accept whether to do it distributed or all on the main process (in which case distributed break signal needs to be handled correctly)
 - [ ] figure out how best to handle different impl of kv cache, for now just do without
-- [ ] allow for different strategies for sampling the pairs
 - [ ] consider KTO
 - [ ] any order of sft, spin, self-rewarding dpo, dpo with external reward model
+- [ ] allow for a validation function on the rewards (say reward must be integer, float, in between some range etc)
 
 ## Citation
 

@@ -342,6 +342,9 @@ class DPOTrainer(Module):
     def is_main(self):
         return self.accelerator.is_main_process
 
+    def print(self, *msg):
+        self.accelerator.print(*msg)
+
     def wait(self):
         return self.accelerator.wait_for_everyone()
 
