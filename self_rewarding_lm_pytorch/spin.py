@@ -18,7 +18,8 @@ from einops import rearrange
 from einx import get_at
 
 from pytorch_custom_utils.utils import (
-    masked_mean
+    masked_mean,
+    maybe_and_mask
 )
 
 from self_rewarding_lm_pytorch.dpo import (
@@ -50,17 +51,6 @@ def log_prob_from_model_and_seq(model, seq):
 def prompt_mask_from_len(lengths, seq):
     seq_len, device = seq.shape[-1], seq.device
     return torch.arange(seq_len, device = device) < rearrange(lengths, '... -> ... 1')
-
-def maybe_and_mask(*masks):
-    masks = [*filter(exists, masks)]
-    if len(masks) == 0:
-        return None
-
-    mask, *rest_masks = masks
-    for rest_mask in rest_masks:
-        mask = mask & rest_mask
-
-    return mask
 
 # main class
 
@@ -107,8 +97,8 @@ class SPIN(Module):
         n - sequence length
         """
 
-        real_prompt_mask = torch.arange(real_seq.shape[-1], device = self.device) < prompt_len[:, None]
-        generated_prompt_mask = torch.arange(generated_seq.shape[-1], device = self.device) < prompt_len[:, None]
+        real_prompt_mask = prompt_mask_from_len(prompt_len, real_seq)
+        generated_prompt_mask = prompt_mask_from_len(prompt_len, generated_seq)
 
         """
         Equation 4.7 in https://arxiv.org/abs/2401.01335v1

@@ -32,7 +32,8 @@ from pytorch_custom_utils.accelerate_utils import (
 )
 
 from pytorch_custom_utils.utils import (
-    masked_mean
+    masked_mean,
+    maybe_and_mask
 )
 
 from tqdm import tqdm
@@ -59,17 +60,6 @@ def log_prob_from_model_and_seq(model, seq):
 def prompt_mask_from_len(lengths, seq):
     seq_len, device = seq.shape[-1], seq.device
     return torch.arange(seq_len, device = device) < rearrange(lengths, '... -> ... 1')
-
-def maybe_and_mask(*masks):
-    masks = [*filter(exists, masks)]
-    if len(masks) == 0:
-        return None
-
-    mask, *rest_masks = masks
-    for rest_mask in rest_masks:
-        mask = mask & rest_mask
-
-    return mask
 
 def set_dropout_(model: Module, prob: float):
     for module in model.modules():

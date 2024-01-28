@@ -23,7 +23,7 @@ setup(
     'einx[torch]>=0.1.3',
     'Jinja2',
     'numpy',
-    'pytorch-custom-utils>=0.0.16',
+    'pytorch-custom-utils>=0.0.17',
     'torch>=2.0',
     'torchtyping',
     'tqdm'
