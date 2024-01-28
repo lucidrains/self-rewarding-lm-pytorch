@@ -79,6 +79,27 @@ def prompt_mask_from_len(length, seq):
     seq_len, device = seq.shape[-1], seq.device
     return torch.arange(seq_len, device = device) < rearrange(length, '... -> ... 1')
 
+def cast_input(cast_fn):
+    def decorator(fn):
+        @wraps(fn)
+        def inner(t, *args, **kwargs):
+            t = cast_fn(t)
+            return fn(t, *args, **kwargs)
+        return inner
+
+    return decorator
+
+def cast_output(cast_fn):
+    def decorator(fn):
+        @wraps(fn)
+        def output(*args, **kwargs):
+            out = fn(*args, **kwargs)
+            out = cast_fn(out)
+            return out
+        return output
+
+    return decorator
+
 # constants
 # llm-as-judge prompt
 # https://openreview.net/forum?id=uccHPGDlao
@@ -352,8 +373,8 @@ class DPODatasetGenerator(Module):
         self.eval_nucleus_p = eval_nucleus_p
         self.eval_temperature = eval_temperature
 
-        self.tokenizer_encode = tokenizer_encode
-        self.tokenizer_decode = tokenizer_decode
+        self.tokenizer_encode = cast_input(lambda t: t.long())(tokenizer_encode)
+        self.tokenizer_decode = cast_output(lambda t: t.long())(tokenizer_decode)
 
         self.num_evals_to_average = num_evals_to_average
 
@@ -417,7 +438,7 @@ class DPODatasetGenerator(Module):
 
         reward_responses = sample(
             self.model,
-            prompts = reward_prompt.long(),
+            prompts = reward_prompt,
             seq_len = self.generate_reward_max_seq_len,
             temperature = self.eval_temperature,
             filter_fn = top_p, 
@@ -464,7 +485,7 @@ class DPODatasetGenerator(Module):
 
                 candidate_tensor_responses = sample(
                     self.model,
-                    prompts = repeated_prompt_tensor.long(),
+                    prompts = repeated_prompt_tensor,
                     seq_len = self.preference_max_seq_len,
                     temperature = self.gen_temperature,
                     filter_fn = top_p,
