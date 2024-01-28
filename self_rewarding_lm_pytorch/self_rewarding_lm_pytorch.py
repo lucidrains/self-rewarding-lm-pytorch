@@ -635,11 +635,16 @@ class SelfRewardingTrainer(Module):
             pad_id = pad_id
         )
 
-        self.dpo_trainer = DPOTrainer(
-            dpo = self.dpo,
-            accelerator = self.accelerator,
-            **dpo_trainer_kwargs
-        )
+        self.dpo_trainers = []
+
+        for _ in range(self_reward_num_iterations):
+            trainer = DPOTrainer(
+                dpo = self.dpo,
+                accelerator = self.accelerator,
+                **dpo_trainer_kwargs
+            )
+
+            self.dpo_trainers.append(trainer)
 
         # checkpoints folder
 
@@ -694,13 +699,13 @@ class SelfRewardingTrainer(Module):
 
             self.wait()
 
-        for ind, dpo_dataset_generator in enumerate(self.dpo_dataset_generators):
+        for ind, (dpo_dataset_generator, dpo_trainer) in enumerate(zip(self.dpo_dataset_generators, self.dpo_trainers)):
 
             iterate_num = ind + 1
 
             dpo_dataset_from_self_reward = dpo_dataset_generator()
 
-            self.dpo_trainer(dpo_dataset_from_self_reward)
+            dpo_trainer(dpo_dataset_from_self_reward)
 
             self.wait()
 

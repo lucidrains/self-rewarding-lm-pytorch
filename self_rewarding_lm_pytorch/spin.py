@@ -42,7 +42,7 @@ def freeze_all_layers_(module):
     for param in module.parameters():
         param.requires_grad = False
 
-def log_prob_from_model_and_seq(model, seq, eps = 1e-20):
+def log_prob_from_model_and_seq(model, seq):
     logits = model(seq)
     log_probs = logits.log_softmax(dim = -1)
     return get_at('b n [c], b n -> b n', log_probs, seq)
