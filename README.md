@@ -54,7 +54,7 @@ def encode_str(seq_str: str) -> Tensor:
 trainer = SelfRewardingTrainer(
     transformer,
     train_sft_dataset = SFTDataset(),
-    spin = False,
+    num_spin_cycles = 0,
     num_preference_pairs = [1, 1],
     preference_max_seq_len = 64,
     prompt_dataset = PromptDataset(),

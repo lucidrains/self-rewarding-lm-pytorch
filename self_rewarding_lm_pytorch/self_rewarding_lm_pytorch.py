@@ -534,8 +534,8 @@ class SelfRewardingTrainer(Module):
         train_sft_dataset: Optional[Union[List[Dataset], Dataset]] = None,
         valid_sft_dataset: Optional[Dataset] = None,
         initial_sft: bool = True,
-        spin: bool = False,
         dpo_beta = 0.1,
+        num_spin_cycles = 0,
         spin_λ  = 0.1,
         preference_max_seq_len: int = 1024,
         self_reward_num_iterations = 2,
@@ -608,13 +608,13 @@ class SelfRewardingTrainer(Module):
 
         # spin
 
-        self.spin = spin
-        self.spin_trainer = None
+        self.spin_trainers = []
 
-        if spin:
-            assert exists(train_sft_dataset)
+        assert len(self.spin_trainers) == 0 or exists(train_sft_dataset)
 
-            self.spin_trainer = SPINTrainer(
+        for _ in range(num_spin_cycles):
+
+            spin_trainer = SPINTrainer(
                 model,
                 accelerator = self.accelerator,
                 sft_dataset = train_sft_dataset,
@@ -623,6 +623,8 @@ class SelfRewardingTrainer(Module):
                 pad_id = pad_id,
                 **spin_trainer_kwargs
             )
+
+            self.spin_trainers.append(spin_trainer)
 
         # self-reward related
 
@@ -707,12 +709,14 @@ class SelfRewardingTrainer(Module):
 
             self.wait()
 
-        if self.spin:
-            self.spin_trainer()
+        for ind, spin_trainer in enumerate(self.spin_trainers):
+            spin_cycle = ind + 1
+
+            spin_trainer()
 
             self.wait()
 
-            self.save('spin.ckpt.pt', overwrite = overwrite_checkpoints)
+            self.save(f'spin.{spin_cycle}.ckpt.pt', overwrite = overwrite_checkpoints)
 
             self.wait()
 
