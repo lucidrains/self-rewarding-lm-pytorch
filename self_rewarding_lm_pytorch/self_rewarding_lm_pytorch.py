@@ -519,6 +519,11 @@ class DPODatasetGenerator(Module):
 
                 rewards_tensor = Tensor([default(reward, float('nan')) for reward in rewards])
 
+                # if there are less than 2 candidate responses with properly returned reward responses, try again
+
+                if (~torch.isnan(rewards_tensor)).sum(dim = -1) < 2:
+                    continue
+
                 preference_pair_indices = self.pick_paired_rewards(rewards_tensor)
 
                 # pick out the max and min reward values
@@ -565,6 +570,7 @@ class SelfRewardingTrainer(Module):
         *,
         tokenizer_encode: Callable[[str], TensorType['seq', int]],
         tokenizer_decode: Callable[[TensorType['seq', int]], str],
+        prompt_dataset: Union[Tuple[Dataset, ...], Dataset],
         train_sft_dataset: Optional[Union[Tuple[Dataset], Dataset]] = None,
         valid_sft_dataset: Optional[Dataset] = None,
         initial_sft: bool = True,
@@ -578,6 +584,8 @@ class SelfRewardingTrainer(Module):
             'default',
             'default'
         ],
+        is_valid_reward_pair: Optional[Callable[[Tensor, Tensor], bool]] = lambda preferred_reward, unpreferred_reward: (preferred_reward != unpreferred_reward).all(),
+        pick_paired_rewards: Callable[[Tensor], Tensor] = default_pick_paired_rewards_fn,
         num_preference_pairs: List[int] = [
             3964,
             6942
@@ -589,17 +597,14 @@ class SelfRewardingTrainer(Module):
             eval_temperature = 0.7,
             eval_nucleus_p = 0.9
         ),
-        prompt_dataset: Optional[Union[Tuple[Dataset, ...], Dataset]] = None,
         early_stopper: Optional[EarlyStopper] = None,
+        dropout: float = 0.1,
+        pad_id: int = -1,
+        checkpoints_folder: str = './checkpoints',
         accelerate_kwargs: dict = dict(),
         sft_trainer_kwargs: dict = dict(),
         spin_trainer_kwargs: dict = dict(),
         dpo_trainer_kwargs: dict = dict(),
-        dropout: float = 0.1,
-        checkpoints_folder: str = './checkpoints',
-        is_valid_reward_pair: Optional[Callable[[Tensor, Tensor], bool]] = lambda preferred_reward, unpreferred_reward: (preferred_reward != unpreferred_reward).all(),
-        pick_paired_rewards: Callable[[Tensor], Tensor] = default_pick_paired_rewards_fn,
-        pad_id: int = -1
     ):
         super().__init__()
 
