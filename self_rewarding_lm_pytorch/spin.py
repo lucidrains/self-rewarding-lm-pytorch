@@ -229,18 +229,21 @@ class SPINTrainer(Module):
         return self.accelerator.wait_for_everyone()
 
     def save(self, path: str, overwrite: bool = False):
-        if not self.is_main:
-            return
+        self.wait()
 
-        path = self.checkpoint_folder / path
+        if self.is_main:
 
-        assert not path.exists() or overwrite, f'file already exists'
+            path = self.checkpoint_folder / path
 
-        pkg = dict(
-            model = self.unwrapped_model.state_dict()
-        )
+            assert not path.exists() or overwrite, f'file already exists'
 
-        torch.save(pkg, str(path))
+            pkg = dict(
+                model = self.unwrapped_model.state_dict()
+            )
+
+            torch.save(pkg, str(path))
+
+        self.wait()
 
     def calc_spin_loss(
         self,
@@ -329,11 +332,7 @@ class SPINTrainer(Module):
                     self.wait()
 
                 if self.should_checkpoint and not (self.checkpoint_every % self.steps):
-                    self.wait()
-
                     checkpoint_num = self.steps // self.checkpoint_every
                     self.save(f'spin.ckpt.{checkpoint_num}.pt', overwrite = overwrite_checkpoints)
-
-                    self.wait()
 
         self.print(f'self-play training complete')

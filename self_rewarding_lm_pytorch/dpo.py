@@ -4,7 +4,7 @@ from collections import namedtuple
 from dataclasses import dataclass
 
 from beartype import beartype
-from beartype.typing import Optional, Callable
+from beartype.typing import Optional, Callable, Union
 from torchtyping import TensorType
 
 import torch
@@ -287,27 +287,35 @@ class DPOTrainer(Module):
     @beartype
     def __init__(
         self,
-        dpo: DPO,
+        dpo: Union[DPO, Module],
         *,
-        accelerator: Optional[Accelerator],
-        accelerate_kwargs: dict = dict(),
+        accelerator: Optional[Accelerator] = None,
         batch_size: int = 16,
         num_decay_steps: int = 1000,
         learning_rate: float = 3e-4,
         weight_decay: float = 0.,
-        val_dataset: Optional[Dataset] = None,
+        train_dataset: Optional[Dataset] = None,
+        valid_dataset: Optional[Dataset] = None,
         start_learning_rate: float = 1e-6,
         end_learning_rate: float = 1e-7,
-        adam_kwargs: dict = dict(),
         early_stopper: Optional[EarlyStopper] = None,
         dropout: float = 0.1,
-        check_early_stop_every: int = 200
+        check_early_stop_every: int = 200,
+        adam_kwargs: dict = dict(),
+        accelerate_kwargs: dict = dict(),
+        dpo_kwargs: dict = dict(
+            beta = 0.1
+        )
     ):
         super().__init__()
+
+        if not isinstance(dpo, DPO):
+            dpo = DPO(dpo, **dpo_kwargs)
+
         set_dropout_(dpo, dropout)
 
         if not exists(accelerator):
-            accelerator = Accelerator(**accelerate_kwrags)
+            accelerator = Accelerator(**accelerate_kwargs)
 
         self.accelerator = accelerator
 
@@ -331,9 +339,14 @@ class DPOTrainer(Module):
 
         self.check_early_stop_every = check_early_stop_every
 
-        self.val_dataloader = None
-        if exists(val_dataset):
-            self.val_dataloader = DataLoader(val_dataset, batch_size = batch_size, drop_last = True, shuffle = True)
+        self.train_dataloader = None
+        if exists(train_dataset):
+            self.train_dataloader = DataLoader(train_dataset, batch_size = batch_size, shuffle = True, drop_last = True)
+            self.train_dataloader = accelerator.prepare(self.train_dataloader)
+
+        self.valid_dataloader = None
+        if exists(valid_dataset):
+            self.valid_dataloader = DataLoader(valid_dataset, batch_size = batch_size)
 
         self.steps = 0
         self.register_buffer('break_signal', torch.tensor(0.))
@@ -353,10 +366,14 @@ class DPOTrainer(Module):
 
     def forward(
         self,
-        train_self_reward_dataset: Dataset
+        train_self_reward_dataset: Optional[Dataset] = None
     ):
-        train_dataloader = DataLoader(train_self_reward_dataset, batch_size = self.batch_size, drop_last = True, shuffle = True)
-        train_dataloader = self.accelerator.prepare(train_dataloader)
+        train_dataloader = self.train_dataloader
+
+        if not exists(train_dataloader):
+            assert exists(train_self_reward_dataset)
+            train_dataloader = DataLoader(train_self_reward_dataset, batch_size = self.batch_size, drop_last = True, shuffle = True)
+            train_dataloader = self.accelerator.prepare(train_dataloader)
 
         iter_dl = cycle(train_dataloader)
 
