@@ -113,10 +113,12 @@ class EarlyStopper(Module):
         self,
         model: Module,
         dataset: Dataset,
+        accelerator: Accelerator,
         calculate_should_stop: Callable[..., bool] = lambda past_scores, score: len(past_scores) > 0 and score < past_scores[-1],
         early_stop_checkpoint_folder: str = './early-stop-checkpoint'
     ):
         super().__init__()
+        self.accelerator = accelerator
         self.model = model
         self.scores = []
         self.calculate_should_stop = calculate_should_stop
@@ -126,42 +128,59 @@ class EarlyStopper(Module):
         self.early_stop_checkpoint_folder = Path(early_stop_checkpoint_folder)
         self.early_stop_checkpoint_folder.mkdir(exist_ok = True, parents = True)
 
+        self.register_buffer('break_signal', torch.tensor(0.))
+
+    @property
+    def is_main(self):
+        return self.accelerator.is_main_process
+
     def save(self, path: str, overwrite: bool = False):
-        if not self.accelerator.is_main_process:
-            return
+        self.wait()
 
-        path = self.checkpoints_folder / path
+        if self.is_main:
 
-        assert not path.exists() or overwrite, f'file already exists'
+            path = self.checkpoints_folder / path
 
-        pkg = dict(
-            model = self.model.state_dict()
-        )
+            assert not path.exists() or overwrite, f'file already exists'
 
-        torch.save(pkg, str(path))
+            pkg = dict(
+                model = self.model.state_dict()
+            )
+
+            torch.save(pkg, str(path))
+
+        self.wait()
 
     @torch.no_grad()
     def forward(self) -> EarlyStopperReturn:
         self.model.eval()
 
-        raise NotImplementedError
+        score = None
 
-        should_stop = self.calculate_should_stop(self.scores, score)
-        self.scores.append(score)
+        if self.is_main:
+            should_stop = self.calculate_should_stop(self.scores, score)
+            self.scores.append(score)
 
-        if should_stop:
-            prev_checkpoint_filename = f'model.ckpt.{len(self.scores) - 1}.pt'
-            ckpt_path = self.early_stop_checkpoint_folder / prev_checkpoint_filename
+            if should_stop:
+                prev_checkpoint_filename = f'model.ckpt.{len(self.scores) - 1}.pt'
+                ckpt_path = self.early_stop_checkpoint_folder / prev_checkpoint_filename
 
-            pkg = torch.load(str(ckpt_path))
+                pkg = torch.load(str(ckpt_path))
 
-            self.model.load_state_dict(pkg['model'])
-        else:
-            checkpoint_filename = f'model.ckpt.{len(self.scores)}.pt'
-            ckpt_path = self.early_stop_checkpoint_folder / checkpoint_filename
-            self.save(str(ckpt_path))
+                self.model.load_state_dict(pkg['model'])
+            else:
+                checkpoint_filename = f'model.ckpt.{len(self.scores)}.pt'
+                ckpt_path = self.early_stop_checkpoint_folder / checkpoint_filename
+                self.save(str(ckpt_path))
 
-        return EarlyStopperReturn(score, should_stop)
+            if should_stop:
+                self.break_signal.copy_(1.)
+
+        # handle distributing break signal for early stopping
+
+        dist.all_reduce(self.break_signal)
+
+        return EarlyStopperReturn(score, self.break_signal.item() == 1)
 
 # dataset from two memmap numpy file
 
@@ -354,7 +373,6 @@ class DPOTrainer(Module):
 
         self.steps = 0
         self.num_train_steps = num_train_steps
-        self.register_buffer('break_signal', torch.tensor(0.))
 
     @property
     def is_main(self):
@@ -413,14 +431,11 @@ class DPOTrainer(Module):
 
                 early_stop_return = self.early_stopper()
 
-                self.print(f'valid dpo loss: {early_stop_return.score:.3f}')
-                self.log(dpo_valid_score = early_stop_return.score)
+                if self.is_main:
+                    self.print(f'valid dpo loss: {early_stop_return.score:.3f}')
+                    self.log(dpo_valid_score = early_stop_return.score)
 
-                if self.is_main and early_stop_return.should_stop:
-                    self.break_signal.copy_(1.)
-                    dist.all_reduce(self.break_signal)
-
-                if self.break_signal.item() == 1:
+                if early_stop_return.should_stop:
                     break
 
             self.wait()

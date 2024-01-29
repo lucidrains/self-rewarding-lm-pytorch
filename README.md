@@ -145,7 +145,10 @@ trainer = SelfRewardingTrainer(
 - [x] show an example for using your own reward prompt instead of default llm-as-judge
 - [x] allow for different strategies for sampling the pairs
 
-- [ ] early stopper should accept an evaluation module that takes in the model and outputs a score, should also accept whether to do it distributed or all on the main process (in which case distributed break signal needs to be handled correctly)
+- [ ] early stopper
+    - [x] handle break signal if all done on main process
+    - [ ] accept eval module, could be either validation loss or something more sophisticated. returns a scalar tensor or single int / float
+
 - [ ] figure out how best to handle different impl of kv cache, for now just do without
 - [ ] consider KTO
 - [ ] any order of sft, spin, self-rewarding dpo, dpo with external reward model
