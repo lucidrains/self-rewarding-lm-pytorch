@@ -143,6 +143,7 @@ def create_parse_reward_fn(reward_regex_template):
     assert find_variables_from_jinja_template(reward_regex_template) == {'reward'}, 'reward template must include "score" variable'
     reward_regex_str = jinja2_env.from_string(reward_regex_template).render(reward = "([0-9\.]+)")
 
+    # @always(lambda: randrange(0, 10))
     def parse_reward_fn(llm_response: str) -> float:
         result = re.search(rf"{reward_regex_str}", llm_response)
 
@@ -359,6 +360,7 @@ class DPODatasetGenerator(Module):
         num_evals_to_average: int = 3,
         *,
         reward_config: RewardConfig,
+        reward_model: Optional[Module] = None,
         data_folder: str = './',
         preference_seq_memmap_file: str = 'preference_seq.memmap.npy',
         prompt_len_memmap_file: str = 'prompt_len.memmap.npy',
@@ -395,6 +397,11 @@ class DPODatasetGenerator(Module):
 
         self.pick_paired_rewards = pick_paired_rewards
         self.is_valid_reward_pair = default(is_valid_reward_pair, lambda *args: True)
+
+        # prepare external reward model, if passed in
+
+        self.has_external_reward_model = exists(reward_model)
+        self.reward_model = reward_model
 
         # shapes and padding
 
@@ -511,13 +518,32 @@ class DPODatasetGenerator(Module):
                 candidate_int_responses: List[List[int]] = [response.tolist() for response in candidate_tensor_responses]
                 candidate_responses: List[str] = [*map(self.tokenizer_decode, candidate_int_responses)]
 
-                # get rewards
+                candidate_tensor_responses = pad_sequence(candidate_tensor_responses, batch_first = True, padding_value = self.pad_id)
+                responses_with_prompt = torch.cat((repeated_prompt_tensor, candidate_tensor_responses), dim = -1)
 
-                rewards: List[Optional[float]] = [self.generate_reward(prompt, response) for response in candidate_responses]
+                if not self.has_external_reward_model:
+                    # get rewards through self-rewarding
 
-                # turn rewards into a Tensor
+                    rewards: List[Optional[float]] = [self.generate_reward(prompt, response) for response in candidate_responses]
 
-                rewards_tensor = Tensor([default(reward, float('nan')) for reward in rewards])
+                    # turn rewards into a Tensor
+
+                    rewards_tensor = Tensor([default(reward, float('nan')) for reward in rewards])
+                else:
+                    # or use external reward module
+
+                    reward_model_input = responses_with_prompt.masked_fill(responses_with_prompt == self.pad_id, 0)
+
+                    rewards_tensor = self.reward_model(reward_model_input)
+
+                    # auto-handle different types of external reward model output
+
+                    assert rewards_tensor.ndim <= 2
+
+                    if rewards_tensor.shape[-1] > 1:
+                        rewards_tensor = rewards_tensor.argmax(dim = -1)
+                    elif rewards_tensor.ndim == 2:
+                        rewards_tensor = rearrange(rewards_tensor, 'b 1 -> b')
 
                 # if there are less than 2 candidate responses with properly returned reward responses, try again
 
@@ -532,15 +558,13 @@ class DPODatasetGenerator(Module):
 
                 # pick out the preferred and unpreferred response
 
-                candidate_tensor_responses = pad_sequence(candidate_tensor_responses, batch_first = True, padding_value = self.pad_id)
-                paired_preference_responses = candidate_tensor_responses[preference_pair_indices]
+                paired_responses_with_prompt = responses_with_prompt[preference_pair_indices]
 
                 if not self.is_valid_reward_pair(*paired_rewards.unbind(dim = -1)):
                     break
 
                 memmap_idx = num_generated
 
-                paired_responses_with_prompt = torch.cat((repeated_prompt_tensor[:2], paired_preference_responses), dim = -1)
                 paired_responses_with_prompt = pad_or_slice_to(paired_responses_with_prompt, self.preference_max_seq_len, dim = -1, pad_value = self.pad_id)
 
                 self.prompt_len_memmap[memmap_idx] = prompt_len
@@ -584,6 +608,7 @@ class SelfRewardingTrainer(Module):
             'default',
             'default'
         ],
+        reward_model: Tuple[Optional[Module], ...] = (None, None),
         is_valid_reward_pair: Optional[Callable[[Tensor, Tensor], bool]] = lambda preferred_reward, unpreferred_reward: (preferred_reward != unpreferred_reward).all(),
         pick_paired_rewards: Callable[[Tensor], Tensor] = default_pick_paired_rewards_fn,
         num_preference_pairs: List[int] = [
@@ -661,6 +686,13 @@ class SelfRewardingTrainer(Module):
 
             self.spin_trainers.append(spin_trainer)
 
+        # external reward model (not in paper, but just allow for it)
+
+        reward_model = cast_tuple(reward_model, self_reward_num_iterations)
+        assert len(reward_model) == self_reward_num_iterations
+
+        reward_models = [self.accelerator.prepare(model) if exists(model) else None for model in reward_model]
+
         # self-reward related
 
         self.reward_prompt_configs = [reward_prompt_config[key] for key in reward_iteration_type]
@@ -668,11 +700,12 @@ class SelfRewardingTrainer(Module):
 
         self.dpo_dataset_generators = []
 
-        for reward_config, one_prompt_dataset, one_stage_num_preference_pairs in zip(self.reward_prompt_configs, prompt_dataset, num_preference_pairs):
+        for reward_config, one_prompt_dataset, one_stage_num_preference_pairs, one_reward_model in zip(self.reward_prompt_configs, prompt_dataset, num_preference_pairs, reward_model):
             self.dpo_dataset_generators.append(DPODatasetGenerator(
                 model = model,
                 prompt_dataset = one_prompt_dataset,
                 reward_config = reward_config,
+                reward_model = one_reward_model,
                 num_preference_pairs = one_stage_num_preference_pairs,
                 preference_max_seq_len = preference_max_seq_len,
                 tokenizer_encode = tokenizer_encode,
