@@ -43,6 +43,9 @@ from tqdm import tqdm
 def exists(v):
     return v is not None
 
+def default(v, d):
+    return v if exists(v) else d
+
 def cycle(dl):
     while True:
         for batch in dl:
@@ -292,6 +295,7 @@ class DPOTrainer(Module):
         accelerator: Optional[Accelerator] = None,
         batch_size: int = 16,
         num_decay_steps: int = 1000,
+        num_train_steps: Optional[int] = None,
         learning_rate: float = 3e-4,
         weight_decay: float = 0.,
         train_dataset: Optional[Dataset] = None,
@@ -349,6 +353,7 @@ class DPOTrainer(Module):
             self.valid_dataloader = DataLoader(valid_dataset, batch_size = batch_size)
 
         self.steps = 0
+        self.num_train_steps = num_train_steps
         self.register_buffer('break_signal', torch.tensor(0.))
 
     @property
@@ -377,7 +382,7 @@ class DPOTrainer(Module):
 
         iter_dl = cycle(train_dataloader)
 
-        pbar = tqdm(desc = 'dpo finetuning')
+        pbar = tqdm(desc = 'dpo finetuning', total = self.num_train_steps)
 
         while True:
             self.model.train()
@@ -395,6 +400,13 @@ class DPOTrainer(Module):
 
             self.steps += 1
             pbar.update(1)
+
+            if exists(self.num_train_steps) and self.steps >= self.num_train_steps:
+                break
+
+            # early stopping logic from the paper
+            # per self-reward iteration they kept DPO training until validation score dropped
+
             self.wait()
 
             if not (self.steps % self.check_early_stop_every) and exists(self.early_stopper):
