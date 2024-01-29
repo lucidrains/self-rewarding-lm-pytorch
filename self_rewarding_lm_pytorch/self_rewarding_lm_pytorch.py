@@ -622,7 +622,7 @@ class SelfRewardingTrainer(Module):
             eval_temperature = 0.7,
             eval_nucleus_p = 0.9
         ),
-        early_stopper: Optional[EarlyStopper] = None,
+        early_stopper_eval_module: Optional[Module] = None,
         dropout: float = 0.1,
         pad_id: int = -1,
         checkpoints_folder: str = './checkpoints',
@@ -730,6 +730,7 @@ class SelfRewardingTrainer(Module):
             trainer = DPOTrainer(
                 dpo = self.dpo,
                 accelerator = self.accelerator,
+                early_stopper_eval_module = early_stopper_eval_module,
                 **dpo_trainer_kwargs
             )
 

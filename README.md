@@ -1,6 +1,6 @@
 <img src="./diagram.png" width="450px"></img>
 
-## Self-Rewarding Language Model (wip)
+## Self-Rewarding Language Model
 
 Implementation of the training framework proposed in <a href="https://arxiv.org/abs/2401.10020">Self-Rewarding Language Model</a>, from MetaAI
 
@@ -144,10 +144,9 @@ trainer = SelfRewardingTrainer(
 - [x] handle eos
 - [x] show an example for using your own reward prompt instead of default llm-as-judge
 - [x] allow for different strategies for sampling the pairs
-
-- [ ] early stopper
+- [x] early stopper
     - [x] handle break signal if all done on main process
-    - [ ] accept eval module, could be either validation loss or something more sophisticated. returns a scalar tensor or single int / float
+    - [x] accept eval module, could be either validation loss or something more sophisticated. returns a scalar tensor or single int / float
 
 - [ ] figure out how best to handle different impl of kv cache, for now just do without
 - [ ] consider KTO

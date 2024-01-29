@@ -1,5 +1,7 @@
+import os
 from pathlib import Path
 from copy import deepcopy
+from functools import cache
 from collections import namedtuple
 from dataclasses import dataclass
 
@@ -50,6 +52,10 @@ def cycle(dl):
     while True:
         for batch in dl:
             yield batch
+
+@cache
+def is_distributed():
+    return dist.is_initialized() and dist.get_world_size() > 1
 
 def freeze_all_layers_(module):
     for param in module.parameters():
@@ -112,34 +118,41 @@ class EarlyStopper(Module):
     def __init__(
         self,
         model: Module,
-        dataset: Dataset,
+        evaluator: Module,
         accelerator: Accelerator,
-        calculate_should_stop: Callable[..., bool] = lambda past_scores, score: len(past_scores) > 0 and score < past_scores[-1],
+        calculate_should_stop: Callable[..., bool] = lambda scores: len(scores) > 1 and scores[-1] > scores[-2],
         early_stop_checkpoint_folder: str = './early-stop-checkpoint'
     ):
         super().__init__()
-        self.accelerator = accelerator
         self.model = model
+        self.evaluator = evaluator
+        self.accelerator = accelerator
+
         self.scores = []
         self.calculate_should_stop = calculate_should_stop
-
-        self.val_dl = DataLoader(dataset, batch_size  = batch_size, shuffle = True, drop_last = True)
 
         self.early_stop_checkpoint_folder = Path(early_stop_checkpoint_folder)
         self.early_stop_checkpoint_folder.mkdir(exist_ok = True, parents = True)
 
         self.register_buffer('break_signal', torch.tensor(0.))
 
+    def clear_early_checkpoint_folder(self):
+        for file in self.early_stop_checkpoint_folder.glob('*.pt'):
+            os.remove(file)
+
     @property
     def is_main(self):
         return self.accelerator.is_main_process
+
+    def wait(self):
+        return self.accelerator.wait_for_everyone()
 
     def save(self, path: str, overwrite: bool = False):
         self.wait()
 
         if self.is_main:
 
-            path = self.checkpoints_folder / path
+            path = self.early_stop_checkpoint_folder / path
 
             assert not path.exists() or overwrite, f'file already exists'
 
@@ -158,27 +171,32 @@ class EarlyStopper(Module):
         score = None
 
         if self.is_main:
-            should_stop = self.calculate_should_stop(self.scores, score)
+
+            score = self.evaluator(self.model)
             self.scores.append(score)
 
-            if should_stop:
-                prev_checkpoint_filename = f'model.ckpt.{len(self.scores) - 1}.pt'
-                ckpt_path = self.early_stop_checkpoint_folder / prev_checkpoint_filename
-
-                pkg = torch.load(str(ckpt_path))
-
-                self.model.load_state_dict(pkg['model'])
-            else:
-                checkpoint_filename = f'model.ckpt.{len(self.scores)}.pt'
-                ckpt_path = self.early_stop_checkpoint_folder / checkpoint_filename
-                self.save(str(ckpt_path))
+            should_stop = self.calculate_should_stop(self.scores)
 
             if should_stop:
                 self.break_signal.copy_(1.)
 
         # handle distributing break signal for early stopping
 
-        dist.all_reduce(self.break_signal)
+        if is_distributed():
+            dist.all_reduce(self.break_signal)
+            should_stop = self.break_signal.item() == 1.
+
+        # logic for restoring to the checkpoint right before the score fell
+
+        if should_stop:
+            prev_checkpoint_filename = f'model.ckpt.{len(self.scores) - 1}.pt'
+            prev_checkpoint_path = self.early_stop_checkpoint_folder / prev_checkpoint_filename
+            pkg = torch.load(str(prev_checkpoint_path))
+
+            self.model.load_state_dict(pkg['model'])
+        else:
+            checkpoint_filename = f'model.ckpt.{len(self.scores)}.pt'
+            self.save(checkpoint_filename)
 
         return EarlyStopperReturn(score, self.break_signal.item() == 1)
 
@@ -324,11 +342,13 @@ class DPOTrainer(Module):
         early_stopper: Optional[EarlyStopper] = None,
         dropout: float = 0.1,
         check_early_stop_every: int = 200,
+        early_stopper_eval_module: Optional[Module] = None,
         adam_kwargs: dict = dict(),
         accelerate_kwargs: dict = dict(),
         dpo_kwargs: dict = dict(
             beta = 0.1
-        )
+        ),
+        early_stopper_kwargs: dict = dict()
     ):
         super().__init__()
 
@@ -357,8 +377,13 @@ class DPOTrainer(Module):
         )
 
         self.early_stopper = None
-        if self.is_main:
-            self.early_stopper = early_stopper
+        if exists(early_stopper_eval_module):
+            self.early_stopper = EarlyStopper(
+                dpo.policy_model,
+                evaluator = early_stopper_eval_module,
+                accelerator = self.accelerator,
+                **early_stopper_kwargs
+            )
 
         self.check_early_stop_every = check_early_stop_every
 
@@ -391,6 +416,8 @@ class DPOTrainer(Module):
         self,
         train_self_reward_dataset: Optional[Dataset] = None
     ):
+        self.early_stopper.clear_early_checkpoint_folder()
+
         train_dataloader = self.train_dataloader
 
         if not exists(train_dataloader):
@@ -436,6 +463,7 @@ class DPOTrainer(Module):
                     self.log(dpo_valid_score = early_stop_return.score)
 
                 if early_stop_return.should_stop:
+                    self.print('early stopping')
                     break
 
             self.wait()
