@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'self-rewarding-lm-pytorch',
   packages = find_packages(exclude=[]),
-  version = '0.0.22',
+  version = '0.0.23',
   license='MIT',
   description = 'Self Rewarding LM - Pytorch',
   author = 'Phil Wang',

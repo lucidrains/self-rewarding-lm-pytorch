@@ -7,7 +7,7 @@ from functools import wraps
 from textwrap import dedent
 
 from beartype import beartype
-from beartype.typing import Optional, Dict, List, Union, Callable
+from beartype.typing import Optional, Dict, List, Tuple, Union, Callable
 from torchtyping import TensorType
 
 import torch
@@ -79,6 +79,9 @@ def identity(t, *args, **kwargs):
 def prompt_mask_from_len(length, seq):
     seq_len, device = seq.shape[-1], seq.device
     return torch.arange(seq_len, device = device) < rearrange(length, '... -> ... 1')
+
+def cast_tuple(t, length = 1):
+    return t if isinstance(t, tuple) else ((t,) * length)
 
 def cast_input(cast_fn):
     def decorator(fn):
@@ -562,7 +565,7 @@ class SelfRewardingTrainer(Module):
         *,
         tokenizer_encode: Callable[[str], TensorType['seq', int]],
         tokenizer_decode: Callable[[TensorType['seq', int]], str],
-        train_sft_dataset: Optional[Union[List[Dataset], Dataset]] = None,
+        train_sft_dataset: Optional[Union[Tuple[Dataset], Dataset]] = None,
         valid_sft_dataset: Optional[Dataset] = None,
         initial_sft: bool = True,
         dpo_beta = 0.1,
@@ -586,8 +589,7 @@ class SelfRewardingTrainer(Module):
             eval_temperature = 0.7,
             eval_nucleus_p = 0.9
         ),
-        prompt_dataset: Optional[Dataset] = None,
-        model_generate_prompt: Optional[Module] = None,
+        prompt_dataset: Optional[Union[Tuple[Dataset, ...], Dataset]] = None,
         early_stopper: Optional[EarlyStopper] = None,
         accelerate_kwargs: dict = dict(),
         sft_trainer_kwargs: dict = dict(),
@@ -606,15 +608,10 @@ class SelfRewardingTrainer(Module):
 
         assert all([key in reward_prompt_config for key in reward_iteration_type]), f'reward prompt must be one of {reward_prompt_config.keys()}'
 
-        # appears the prompts come from llama 70B chat
-        # also offer a way for it to be passed in
+        # prompts need to be pre-generated. in paper, it seems to be coming from llama 70B chat
 
-        assert (int(exists(prompt_dataset)) + int(exists(model_generate_prompt))) <= 1
-
-        if not exists(prompt_dataset) and not exists(model_generate_prompt):
-            model_generate_prompt = deepcopy(model)
-
-        assert exists(prompt_dataset), 'for now only support prompt dataset being passed in'
+        prompt_dataset = cast_tuple(prompt_dataset, self_reward_num_iterations)
+        assert len(prompt_dataset) == self_reward_num_iterations
 
         # model and accelerator
 
@@ -664,10 +661,12 @@ class SelfRewardingTrainer(Module):
         self.reward_prompt_configs = [reward_prompt_config[key] for key in reward_iteration_type]
         self.self_reward_num_iterations = self_reward_num_iterations
 
-        self.dpo_dataset_generators = [
-            DPODatasetGenerator(
+        self.dpo_dataset_generators = []
+
+        for reward_config, one_prompt_dataset, one_stage_num_preference_pairs in zip(self.reward_prompt_configs, prompt_dataset, num_preference_pairs):
+            self.dpo_dataset_generators.append(DPODatasetGenerator(
                 model = model,
-                prompt_dataset = prompt_dataset,
+                prompt_dataset = one_prompt_dataset,
                 reward_config = reward_config,
                 num_preference_pairs = one_stage_num_preference_pairs,
                 preference_max_seq_len = preference_max_seq_len,
@@ -676,8 +675,7 @@ class SelfRewardingTrainer(Module):
                 is_valid_reward_pair = is_valid_reward_pair,
                 pick_paired_rewards = pick_paired_rewards,
                 **reward_generator_kwargs
-            ) for reward_config, one_stage_num_preference_pairs in zip(self.reward_prompt_configs, num_preference_pairs)
-        ]
+            ))
 
         # dpo
 
