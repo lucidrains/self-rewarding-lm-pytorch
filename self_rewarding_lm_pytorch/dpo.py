@@ -6,7 +6,7 @@ from collections import namedtuple
 from dataclasses import dataclass
 
 from beartype import beartype
-from beartype.typing import Optional, Callable, Union
+from beartype.typing import Optional, Callable, Union, List
 from torchtyping import TensorType
 
 import torch
@@ -128,7 +128,7 @@ class EarlyStopper(Module):
         self.evaluator = evaluator
         self.accelerator = accelerator
 
-        self.scores = []
+        self.scores: List[Union[int, float]] = []
         self.calculate_should_stop = calculate_should_stop
 
         self.early_stop_checkpoint_folder = Path(early_stop_checkpoint_folder)
@@ -173,6 +173,13 @@ class EarlyStopper(Module):
         if self.is_main:
 
             score = self.evaluator(self.model)
+
+            if torch.is_tensor(score):
+                assert score.numel() == 1
+                score = score.flatten().item()
+
+            assert isinstance(score, (int, float))
+
             self.scores.append(score)
 
             should_stop = self.calculate_should_stop(self.scores)
