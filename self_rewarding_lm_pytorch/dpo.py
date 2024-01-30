@@ -359,7 +359,8 @@ class DPOTrainer(Module):
         adam_kwargs: dict = dict(),
         accelerate_kwargs: dict = dict(),
         dpo_kwargs: dict = dict(
-            beta = 0.1
+            beta = 0.1,
+            ref_model_ema_decay = 1.
         ),
         early_stopper_kwargs: dict = dict()
     ):
