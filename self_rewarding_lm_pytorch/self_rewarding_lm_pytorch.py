@@ -331,7 +331,7 @@ class SFTTrainer(Module):
 
                                 loss = self.get_cross_entropy_loss(seq, prompt_len_or_mask)
 
-                                total_valid_loss = loss.item() * batch
+                                total_valid_loss += loss.item() * batch
                                 total_batches += batch
 
                         valid_loss = total_valid_loss / total_batches
