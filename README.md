@@ -152,6 +152,7 @@ trainer = SelfRewardingTrainer(
 - [ ] consider KTO
 - [ ] any order of sft, spin, self-rewarding dpo, dpo with external reward model
 - [ ] allow for a validation function on the rewards (say reward must be integer, float, in between some range etc)
+- [ ] create a variant for both self-rewarding and SPIN where there are no iterations. both create their synthesized data live and reference model is updated with an EMA.
 
 ## Citation
 
