@@ -40,6 +40,8 @@ from pytorch_custom_utils.utils import (
 
 from tqdm import tqdm
 
+from ema_pytorch import EMA
+
 # helper functions
 
 def exists(v):
@@ -56,10 +58,6 @@ def cycle(dl):
 @cache
 def is_distributed():
     return dist.is_initialized() and dist.get_world_size() > 1
-
-def freeze_all_layers_(module):
-    for param in module.parameters():
-        param.requires_grad = False
 
 def log_prob_from_model_and_seq(model, seq):
     logits = model(seq)
@@ -253,19 +251,32 @@ class DPO(Module):
         model: Module,
         *,
         beta = 0.1,
-        pad_id: Optional[int] = None
+        ref_model_ema_decay = 1.,
+        pad_id: Optional[int] = None,
+        ema_kwargs: dict = dict()
     ):
         super().__init__()
+        self.has_ema = ref_model_ema_decay < 1.
+
         self.policy_model = model
 
-        self.ref_model = deepcopy(model)
-        freeze_all_layers_(self.ref_model)
+        self.ref_model = EMA(
+            model,
+            beta = ref_model_ema_decay,
+            **ema_kwargs
+        )
 
         self.beta = beta
         self.pad_id = pad_id
 
     def update_reference_model_with_policy(self):
-        self.ref_model.load_state_dict(self.policy_model.state_dict())
+        self.ref_model.copy_params_from_model_to_ema()
+
+    def update_ema(self):
+        if not self.has_ema:
+            return
+
+        self.ref_model.update()
 
     def parameters(self):
         return self.policy_model.parameters()
@@ -407,6 +418,10 @@ class DPOTrainer(Module):
         self.num_train_steps = num_train_steps
 
     @property
+    def unwrapped_model(self):
+        return self.accelerator.unwrap_model(self.model)
+
+    @property
     def is_main(self):
         return self.accelerator.is_main_process
 
@@ -449,6 +464,12 @@ class DPOTrainer(Module):
 
             self.optimizer.step()
             self.optimizer.zero_grad()
+
+            self.wait()
+
+            self.unwrapped_model.update_ema()
+
+            self.wait()
 
             self.steps += 1
             pbar.update(1)

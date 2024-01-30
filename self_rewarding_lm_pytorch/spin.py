@@ -1,5 +1,4 @@
 from pathlib import Path
-from copy import deepcopy
 
 from beartype import beartype
 from beartype.typing import Optional, Callable
@@ -34,14 +33,12 @@ from self_rewarding_lm_pytorch.sampling_utils import (
 
 from tqdm import tqdm
 
+from ema_pytorch import EMA
+
 # helper functions
 
 def exists(v):
     return v is not None
-
-def freeze_all_layers_(module):
-    for param in module.parameters():
-        param.requires_grad = False
 
 def log_prob_from_model_and_seq(model, seq):
     logits = model(seq)
@@ -60,19 +57,32 @@ class SPIN(Module):
         model: Module,
         *,
         λ = 0.1,
-        pad_id: Optional[int] = None
+        pad_id: Optional[int] = None,
+        ref_model_ema_decay = 1.,
+        ema_kwargs: dict = dict()
     ):
         super().__init__()
+        self.has_ema = ref_model_ema_decay < 1.
+
         self.policy_model = model
 
-        self.ref_model = deepcopy(model)
-        freeze_all_layers_(self.ref_model)
+        self.ref_model = EMA(
+            model,
+            beta = ref_model_ema_decay,
+            **ema_kwargs
+        )
 
         self.λ = λ
         self.pad_id = pad_id
 
     def update_reference_model_with_policy(self):
-        self.ref_model.load_state_dict(self.policy_model.state_dict())
+        self.ref_model.copy_params_from_model_to_ema()
+
+    def update_ema(self):
+        if not self.has_ema:
+            return
+
+        self.ref_model.update()
 
     def parameters(self):
         return self.policy_model.parameters()
@@ -304,6 +314,10 @@ class SPINTrainer(Module):
                 self.optimizer.zero_grad()
 
                 self.steps += 1
+
+                self.wait()
+
+                spin.update_ema()
 
                 self.wait()
 
