@@ -256,8 +256,6 @@ class DPO(Module):
         ema_kwargs: dict = dict()
     ):
         super().__init__()
-        self.has_ema = ref_model_ema_decay < 1.
-
         self.policy_model = model
 
         self.ref_model = EMA(
@@ -273,9 +271,6 @@ class DPO(Module):
         self.ref_model.copy_params_from_model_to_ema()
 
     def update_ema(self):
-        if not self.has_ema:
-            return
-
         self.ref_model.update()
 
     def parameters(self):
