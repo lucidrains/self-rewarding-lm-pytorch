@@ -331,7 +331,7 @@ class SPINTrainer(Module):
                                 valid_spin_loss = self.calc_spin_loss(spin, valid_seq, prompt_len)
 
                                 total_batches += batch
-                                total_loss = valid_spin_loss * batch
+                                total_loss += valid_spin_loss * batch
 
                             valid_loss = total_loss / total_batches
 
