@@ -736,11 +736,16 @@ class SelfRewardingTrainer(Module):
 
         self.dpo_trainers = []
 
-        for _ in range(self_reward_num_iterations):
+        for ind in range(self_reward_num_iterations):
+            dpo_iteration = ind + 1
+
             trainer = DPOTrainer(
                 dpo = model,
                 accelerator = self.accelerator,
                 early_stopper_eval_module = early_stopper_eval_module,
+                early_stopper_kwargs = dict(
+                    early_stop_checkpoint_folder = f'./early-stop-checkpoint.{dpo_iteration}',
+                ),
                 dpo_kwargs = dict(
                     beta = dpo_beta,
                     pad_id = pad_id
