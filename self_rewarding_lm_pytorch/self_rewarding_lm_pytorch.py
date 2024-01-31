@@ -590,10 +590,10 @@ class DPODatasetGenerator(Module):
                 if num_generated >= self.num_preference_pairs:
                     break
 
-        # flush and return instance of DPO Dataset for the two memmapped data files
+        # flush + close and return instance of DPO Dataset for the two memmapped data files
 
-        self.prompt_len_memmap.flush()
-        self.preference_seq_memmap.flush()
+        del self.prompt_len_memmap
+        del self.preference_seq_memmap
 
         return DPODataset(**self.dpo_dataset_kwargs)
 
