@@ -30,7 +30,10 @@ from self_rewarding_lm_pytorch.dpo import (
     adam_optimizer_with_linear_decay
 )
 
-from self_rewarding_lm_pytorch.spin import SPINTrainer
+from self_rewarding_lm_pytorch.spin import (
+    SPIN,
+    SPINTrainer
+)
 
 from einops import rearrange, repeat
 
@@ -635,6 +638,7 @@ class SelfRewardingTrainer(Module):
         accelerate_kwargs: dict = dict(),
         sft_trainer_kwargs: dict = dict(),
         spin_trainer_kwargs: dict = dict(),
+        spin_kwargs: dict = dict(),
         dpo_trainer_kwargs: dict = dict(),
     ):
         super().__init__()
@@ -677,10 +681,20 @@ class SelfRewardingTrainer(Module):
 
         assert len(self.spin_trainers) == 0 or exists(train_sft_dataset)
 
+        self.spin = None
+
+        if num_spin_cycles > 0:
+            self.spin = SPIN(
+                model,
+                pad_id = pad_id,
+                λ = spin_λ,
+                **spin_kwargs
+            )
+
         for _ in range(num_spin_cycles):
 
             spin_trainer = SPINTrainer(
-                model,
+                self.spin,
                 accelerator = self.accelerator,
                 train_sft_dataset = train_sft_dataset,
                 valid_sft_dataset = valid_sft_dataset,
@@ -789,6 +803,8 @@ class SelfRewardingTrainer(Module):
             spin_cycle = ind + 1
 
             spin_trainer()
+
+            self.spin.update_reference_model_with_policy()
 
             self.save(f'spin.{spin_cycle}.ckpt.pt', overwrite = overwrite_checkpoints)
 

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from beartype import beartype
-from beartype.typing import Optional, Callable
+from beartype.typing import Optional, Callable, Union
 from torchtyping import TensorType
 
 import torch
@@ -140,7 +140,7 @@ class SPIN(Module):
 class SPINTrainer(Module):
     def __init__(
         self,
-        model: Module,
+        model: Union[Module, SPIN],
         *,
         train_sft_dataset: Dataset,
         max_seq_len: int,
@@ -169,13 +169,15 @@ class SPINTrainer(Module):
         if not exists(self.accelerator):
             self.accelerator = Accelerator(**accelerate_kwargs)
 
-        self.model = SPIN(
-            model,
-            λ = spin_λ,
-            pad_id = pad_id,
-            ref_model_ema_decay = ref_model_ema_decay
-        )
+        if not isinstance(model, SPIN):
+            model = SPIN(
+                model,
+                λ = spin_λ,
+                pad_id = pad_id,
+                ref_model_ema_decay = ref_model_ema_decay
+            )
 
+        self.model = model
         self.epochs = epochs
         self.train_dataloader = DataLoader(train_sft_dataset, batch_size = batch_size, shuffle = True, drop_last = True)
 
