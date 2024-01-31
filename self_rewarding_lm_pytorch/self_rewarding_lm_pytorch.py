@@ -279,6 +279,11 @@ class SFTTrainer(Module):
         if exists(valid_dataset):
             self.valid_dataloader = DataLoader(valid_dataset, batch_size = batch_size)
 
+        self.steps = 0
+
+    def log(self, **data):
+        self.accelerator.log(data, step = self.steps)
+
     def wait(self):
         return self.accelerator.wait_for_everyone()
 
@@ -308,7 +313,6 @@ class SFTTrainer(Module):
         )
 
     def forward(self):
-        step = 0
 
         for epoch in tqdm(range(self.num_epochs), desc = 'sft finetuning epoch'):
             for seq, prompt_len_or_mask in tqdm(self.train_dataloader, desc = 'sft finetuning'):
@@ -321,9 +325,9 @@ class SFTTrainer(Module):
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
-                self.accelerator.log(dict(loss = loss.item()), step = step)
+                self.log(loss = loss.item())
 
-                step += 1
+                self.steps += 1
 
                 if exists(self.valid_dataloader) and not (step % self.valid_every):
                     self.wait()
@@ -345,7 +349,7 @@ class SFTTrainer(Module):
 
                         valid_loss = total_valid_loss / total_batches
 
-                        self.accelerator.log(dict(valid_loss = valid_loss), step = step)
+                        self.log(valid_loss = valid_loss)
 
                     self.wait()
 
@@ -681,16 +685,6 @@ class SelfRewardingTrainer(Module):
 
         assert len(self.spin_trainers) == 0 or exists(train_sft_dataset)
 
-        self.spin = None
-
-        if num_spin_cycles > 0:
-            self.spin = SPIN(
-                model,
-                pad_id = pad_id,
-                λ = spin_λ,
-                **spin_kwargs
-            )
-
         for _ in range(num_spin_cycles):
 
             spin_trainer = SPINTrainer(
@@ -700,6 +694,8 @@ class SelfRewardingTrainer(Module):
                 valid_sft_dataset = valid_sft_dataset,
                 max_seq_len = spin_trainer_kwargs.pop('max_seq_len', preference_max_seq_len),
                 pad_id = pad_id,
+                spin_λ = spin_λ,
+                spin_kwargs = spin_kwargs,
                 **spin_trainer_kwargs
             )
 
@@ -737,19 +733,18 @@ class SelfRewardingTrainer(Module):
         # dpo
 
         set_dropout_(model, dropout)
-        self.dpo = DPO(
-            model,
-            beta = dpo_beta,
-            pad_id = pad_id
-        )
 
         self.dpo_trainers = []
 
         for _ in range(self_reward_num_iterations):
             trainer = DPOTrainer(
-                dpo = self.dpo,
+                dpo = model,
                 accelerator = self.accelerator,
                 early_stopper_eval_module = early_stopper_eval_module,
+                dpo_kwargs = dict(
+                    beta = dpo_beta,
+                    pad_id = pad_id
+                ),
                 **dpo_trainer_kwargs
             )
 
