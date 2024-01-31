@@ -1,4 +1,5 @@
 import re
+import sys
 from random import randrange
 from copy import deepcopy
 from pathlib import Path
@@ -46,6 +47,11 @@ from self_rewarding_lm_pytorch.sampling_utils import (
 from self_rewarding_lm_pytorch.mocks import always
 
 from tqdm import tqdm
+
+# warning
+
+if sys.maxsize <= (2 ** 32):
+    print('you need to be on 64 bit system to use memmapped files of > 2GB')
 
 # basic templating engine
 
