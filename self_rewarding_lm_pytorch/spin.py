@@ -292,6 +292,8 @@ class SPINTrainer(Module):
         Algorithm 1 - https://arxiv.org/abs/2401.01335v1
         """
 
+        self.model.update_reference_model_with_policy()
+
         self.steps = 0
         self.model.train()
 

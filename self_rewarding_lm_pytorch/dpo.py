@@ -434,7 +434,10 @@ class DPOTrainer(Module):
         self,
         train_self_reward_dataset: Optional[Dataset] = None
     ):
-        self.early_stopper.clear_early_checkpoint_folder()
+        self.model.update_reference_model_with_policy()
+
+        if exists(self.early_stopper):
+            self.early_stopper.clear_early_checkpoint_folder()
 
         train_dataloader = self.train_dataloader
 

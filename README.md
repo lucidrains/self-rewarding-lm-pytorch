@@ -98,9 +98,11 @@ sft_dataset = create_mock_dataset(100, lambda: (torch.randint(0, 256, (256,)), t
 spin_trainer = SPINTrainer(
     transformer,
     max_seq_len = 16,
-    sft_dataset = sft_dataset,
-    spin_λ = 0.1,
-    checkpoint_every = 100
+    train_sft_dataset = sft_dataset,
+    checkpoint_every = 100,
+    spin_kwargs = dict(
+        λ = 0.1,
+    ),
 )
 
 spin_trainer()

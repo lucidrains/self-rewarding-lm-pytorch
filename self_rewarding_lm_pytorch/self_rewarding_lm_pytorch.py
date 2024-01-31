@@ -803,8 +803,6 @@ class SelfRewardingTrainer(Module):
 
             spin_trainer()
 
-            self.spin.update_reference_model_with_policy()
-
             self.save(f'spin.{spin_cycle}.ckpt.pt', overwrite = overwrite_checkpoints)
 
 
@@ -815,8 +813,6 @@ class SelfRewardingTrainer(Module):
             dpo_dataset_from_self_reward = dpo_dataset_generator()
 
             dpo_trainer(dpo_dataset_from_self_reward)
-
-            self.dpo.update_reference_model_with_policy()
 
             self.save(f'self-reward.{iterate_num}.ckpt.pt', overwrite = overwrite_checkpoints)
 
