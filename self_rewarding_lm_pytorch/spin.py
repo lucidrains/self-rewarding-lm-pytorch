@@ -158,10 +158,12 @@ class SPINTrainer(Module):
         temperature = 0.7,
         nucleus_p = 0.9,
         pad_id: int = -1,
-        spin_λ = 0.1,
         ref_model_ema_decay = 1.,
         checkpoint_every = None,
-        checkpoint_folder = './spin-checkpoints'
+        checkpoint_folder = './spin-checkpoints',
+        spin_kwargs: dict = dict(
+            λ = 0.1,
+        )
     ):
         super().__init__()
 
@@ -172,9 +174,9 @@ class SPINTrainer(Module):
         if not isinstance(model, SPIN):
             model = SPIN(
                 model,
-                λ = spin_λ,
                 pad_id = pad_id,
-                ref_model_ema_decay = ref_model_ema_decay
+                ref_model_ema_decay = ref_model_ema_decay,
+                **spin_kwargs
             )
 
         self.model = model
@@ -203,8 +205,6 @@ class SPINTrainer(Module):
         self.temperature = temperature
         self.nucleus_p = nucleus_p
         self.pad_id = pad_id
-
-        self.spin_λ = spin_λ
 
         # validation
 
