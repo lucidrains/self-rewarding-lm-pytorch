@@ -41,6 +41,10 @@ from accelerate import Accelerator
 
 from pytorch_custom_utils.utils import pad_or_slice_to
 
+from pytorch_custom_utils.accelerate_utils import (
+    model_forward_contexts
+)
+
 from self_rewarding_lm_pytorch.sampling_utils import (
     sample,
     top_p,
@@ -230,6 +234,7 @@ class SFTTrainer(Module):
         train_dataset: Union[List[Dataset], Dataset],
         valid_dataset: Optional[Dataset] = None,
         batch_size: int = 16,
+        grad_accum_steps: int = 2,
         num_epochs: int = 3,
         start_learning_rate: float = 5.5e-6,
         end_learning_rate: float = 1.1e-6,
@@ -250,6 +255,9 @@ class SFTTrainer(Module):
             train_dataset = ConcatDataset(train_dataset)
 
         self.train_dataloader = DataLoader(train_dataset, batch_size = batch_size, drop_last = True, shuffle = True)
+
+        self.num_train_steps = len(self.train_dataloader) // grad_accum_steps * num_epochs
+        self.grad_accum_steps = grad_accum_steps
 
         (
             self.model,
@@ -314,44 +322,50 @@ class SFTTrainer(Module):
 
     def forward(self):
 
-        for epoch in tqdm(range(self.num_epochs), desc = 'sft finetuning epoch'):
-            for seq, prompt_len_or_mask in tqdm(self.train_dataloader, desc = 'sft finetuning'):
+        self.model.train()
 
-                self.model.train()
+        train_dl_iter = cycle(self.train_dataloader)
 
-                loss = self.get_cross_entropy_loss(seq, prompt_len_or_mask)
+        for _ in tqdm(range(self.num_train_steps)):
 
-                self.accelerator.backward(loss)
-                self.optimizer.step()
-                self.optimizer.zero_grad()
+            for forward_context in model_forward_contexts(self.accelerator, self.model, self.grad_accum_steps):
+                with forward_context():
+                    seq, prompt_len_or_mask = next(train_dl_iter)
 
-                self.log(loss = loss.item())
+                    loss = self.get_cross_entropy_loss(seq, prompt_len_or_mask)
 
-                self.steps += 1
+                    self.accelerator.backward(loss / self.grad_accum_steps)
 
-                if exists(self.valid_dataloader) and not (step % self.valid_every):
-                    self.wait()
+            self.optimizer.step()
+            self.optimizer.zero_grad()
 
-                    if self.accelerator.is_main_process:
-                        total_valid_loss = 0.
-                        total_batches = 0.
+            self.log(loss = loss.item())
 
-                        self.model.eval()
+            self.steps += 1
 
-                        with torch.no_grad():
-                            for seq, prompt_len_or_mask in self.valid_dataloader:
-                                batch = seq.shape[0]
+            if exists(self.valid_dataloader) and not (step % self.valid_every):
+                self.wait()
 
-                                loss = self.get_cross_entropy_loss(seq, prompt_len_or_mask)
+                if self.accelerator.is_main_process:
+                    total_valid_loss = 0.
+                    total_batches = 0.
 
-                                total_valid_loss += loss.item() * batch
-                                total_batches += batch
+                    self.model.eval()
 
-                        valid_loss = total_valid_loss / total_batches
+                    with torch.no_grad():
+                        for seq, prompt_len_or_mask in self.valid_dataloader:
+                            batch = seq.shape[0]
 
-                        self.log(valid_loss = valid_loss)
+                            loss = self.get_cross_entropy_loss(seq, prompt_len_or_mask)
 
-                    self.wait()
+                            total_valid_loss += loss.item() * batch
+                            total_batches += batch
+
+                    valid_loss = total_valid_loss / total_batches
+
+                    self.log(valid_loss = valid_loss)
+
+                self.wait()
 
 # reward generator class
 
@@ -688,15 +702,16 @@ class SelfRewardingTrainer(Module):
         for _ in range(num_spin_cycles):
 
             spin_trainer = SPINTrainer(
-                self.spin,
+                self.model,
                 accelerator = self.accelerator,
                 train_sft_dataset = train_sft_dataset,
                 valid_sft_dataset = valid_sft_dataset,
                 max_seq_len = spin_trainer_kwargs.pop('max_seq_len', preference_max_seq_len),
                 pad_id = pad_id,
-                spin_λ = spin_λ,
-                spin_kwargs = spin_kwargs,
-                **spin_trainer_kwargs
+                spin_kwargs = {
+                    'λ': spin_λ,
+                    **spin_kwargs
+                }
             )
 
             self.spin_trainers.append(spin_trainer)

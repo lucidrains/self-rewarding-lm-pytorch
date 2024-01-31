@@ -21,6 +21,10 @@ from pytorch_custom_utils.utils import (
     maybe_and_mask
 )
 
+from pytorch_custom_utils.accelerate_utils import (
+    model_forward_contexts
+)
+
 from self_rewarding_lm_pytorch.dpo import (
     adam_optimizer_with_linear_decay
 )
@@ -39,6 +43,11 @@ from ema_pytorch import EMA
 
 def exists(v):
     return v is not None
+
+def cycle(dl):
+    while True:
+        for batch in dl:
+            yield batch
 
 def log_prob_from_model_and_seq(model, seq):
     logits = model(seq)
@@ -149,6 +158,7 @@ class SPINTrainer(Module):
         accelerator: Optional[Accelerator] = None,
         accelerate_kwargs: dict = dict(),
         batch_size = 16,
+        grad_accum_steps = 2,
         epochs = 2,
         start_learning_rate = 1e-6,
         end_learning_rate = 1e-7,
@@ -180,8 +190,10 @@ class SPINTrainer(Module):
             )
 
         self.model = model
-        self.epochs = epochs
         self.train_dataloader = DataLoader(train_sft_dataset, batch_size = batch_size, shuffle = True, drop_last = True)
+
+        self.grad_accum_steps = grad_accum_steps
+        self.num_train_steps = len(self.train_dataloader) // self.grad_accum_steps * epochs
 
         self.optimizer = adam_optimizer_with_linear_decay(
             model,
@@ -297,55 +309,60 @@ class SPINTrainer(Module):
         self.steps = 0
         self.model.train()
 
-        for epoch in tqdm(range(self.epochs), desc = 'spin epoch'):
-            for real_seq, prompt_len in tqdm(self.train_dataloader, desc = 'spin finetuning'):
+        train_dataloader_iter = cycle(self.train_dataloader)
 
-                self.model.train()
+        for _ in tqdm(range(self.num_train_steps), desc = 'spin fine-tuning'):
 
-                train_loss = self.calc_spin_loss(real_seq, prompt_len)
+            self.model.train()
+            for forward_context in model_forward_contexts(self.accelerator, self.model, self.grad_accum_steps):
+                with forward_context():
+                    real_seq, prompt_len = next(train_dataloader_iter)
 
-                self.print(f'train spin loss: {train_loss.item():.3f}')
-                self.log(loss = train_loss.item())
+                    train_loss = self.calc_spin_loss(real_seq, prompt_len)
 
-                self.accelerator.backward(train_loss)
+                    self.accelerator.backward(train_loss / self.grad_accum_steps)
 
-                self.optimizer.step()
-                self.optimizer.zero_grad()
 
-                self.steps += 1
+            self.print(f'train spin loss: {train_loss.item():.3f}')
+            self.log(loss = train_loss.item())
+
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+
+            self.steps += 1
+
+            self.wait()
+
+            self.unwrapped_model.update_ema()
+
+            self.wait()
+
+            if exists(self.valid_dataloader) and not (self.valid_every % self.steps):
+                self.wait()
+
+                if self.is_main:
+                    total_loss = 0.
+                    total_batches = 0.
+
+                    with torch.no_grad():
+                        self.model.eval()
+
+                        for valid_seq, prompt_len in tqdm(self.valid_dataloader, desc = 'valid spin'):
+                            batch = valid_seq.shape[0]
+                            valid_spin_loss = self.calc_spin_loss(valid_seq, prompt_len)
+
+                            total_batches += batch
+                            total_loss += valid_spin_loss * batch
+
+                        valid_loss = total_loss / total_batches
+
+                        self.print(f'valid spin loss: {valid_loss.item():.3f}')
+                        self.log(valid_spin_loss = valid_loss.item())
 
                 self.wait()
 
-                self.unwrapped_model.update_ema()
-
-                self.wait()
-
-                if exists(self.valid_dataloader) and not (self.valid_every % self.steps):
-                    self.wait()
-
-                    if self.is_main:
-                        total_loss = 0.
-                        total_batches = 0.
-
-                        with torch.no_grad():
-                            self.model.eval()
-
-                            for valid_seq, prompt_len in tqdm(self.valid_dataloader, desc = 'valid spin'):
-                                batch = valid_seq.shape[0]
-                                valid_spin_loss = self.calc_spin_loss(valid_seq, prompt_len)
-
-                                total_batches += batch
-                                total_loss += valid_spin_loss * batch
-
-                            valid_loss = total_loss / total_batches
-
-                            self.print(f'valid spin loss: {valid_loss.item():.3f}')
-                            self.log(valid_spin_loss = valid_loss.item())
-
-                    self.wait()
-
-                if self.should_checkpoint and not (self.checkpoint_every % self.steps):
-                    checkpoint_num = self.steps // self.checkpoint_every
-                    self.save(f'spin.ckpt.{checkpoint_num}.pt', overwrite = overwrite_checkpoints)
+            if self.should_checkpoint and not (self.checkpoint_every % self.steps):
+                checkpoint_num = self.steps // self.checkpoint_every
+                self.save(f'spin.ckpt.{checkpoint_num}.pt', overwrite = overwrite_checkpoints)
 
         self.print(f'self-play training complete')

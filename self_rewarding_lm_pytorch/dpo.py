@@ -344,6 +344,7 @@ class DPOTrainer(Module):
         *,
         accelerator: Optional[Accelerator] = None,
         batch_size: int = 16,
+        grad_accum_steps: int = 2,
         num_decay_steps: int = 1000,
         num_train_steps: Optional[int] = None,
         learning_rate: float = 3e-4,
@@ -379,6 +380,7 @@ class DPOTrainer(Module):
         self.model = accelerator.prepare(dpo)
 
         self.batch_size = batch_size
+        self.grad_accum_steps = grad_accum_steps
 
         self.optimizer = adam_optimizer_with_linear_decay(
             dpo,
@@ -453,10 +455,12 @@ class DPOTrainer(Module):
         while True:
             self.model.train()
 
-            batch = next(iter_dl)
+            for forward_context in model_forward_contexts(self.accelerator, self.model, self.grad_accum_steps):
+                with forward_context():
+                    batch = next(iter_dl)
 
-            dpo_loss = self.model(*batch)
-            self.accelerator.backward(dpo_loss)
+                    dpo_loss = self.model(*batch)
+                    self.accelerator.backward(dpo_loss / self.grad_accum_steps)
 
             self.print(f'dpo loss: {dpo_loss.item():.3f}')
             self.log(loss = dpo_loss.item())
