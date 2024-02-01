@@ -26,8 +26,7 @@ from torch import Tensor
 
 from self_rewarding_lm_pytorch import (
     SelfRewardingTrainer,
-    create_mock_dataset,
-    create_default_paper_config
+    create_mock_dataset
 )
 
 from x_transformers import TransformerWrapper, Decoder
@@ -54,7 +53,7 @@ def encode_str(seq_str: str) -> Tensor:
 
 trainer = SelfRewardingTrainer(
     transformer,
-    finetune_configs = create_default_paper_config(
+    finetune_configs = dict(
         train_sft_dataset = sft_dataset,
         self_reward_prompt_dataset = prompt_dataset,
         dpo_num_train_steps = 1000
@@ -157,6 +156,7 @@ from self_rewarding_lm_pytorch import (
 )
 
 trainer = SelfRewardingTrainer(
+    model,
     finetune_configs = [
         SFTConfig(...),
         SelfPlayConfig(...),
@@ -164,7 +164,8 @@ trainer = SelfRewardingTrainer(
         SelfRewardDPOConfig(...),
         SelfPlayConfig(...),
         SelfRewardDPOConfig(...)
-    ]
+    ],
+    ...
 )
 
 trainer()

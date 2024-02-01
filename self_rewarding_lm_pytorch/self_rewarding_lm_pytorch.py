@@ -674,6 +674,7 @@ class SelfPlayConfig(FinetuneConfig):
 
 # generated default config for paper
 
+@beartype
 def create_default_paper_config(
     *,
     train_sft_dataset: Dataset,
@@ -720,7 +721,7 @@ class SelfRewardingTrainer(Module):
         self,
         model: Module,
         *,
-        finetune_configs: List[FinetuneConfig],
+        finetune_configs: Union[Dict, List[FinetuneConfig]],
         tokenizer_encode: Callable[[str], TensorType['seq', int]],
         tokenizer_decode: Callable[[TensorType['seq', int]], str],
         self_reward_prompt_config: Union[RewardConfig, Dict[str, RewardConfig]] = SELF_REWARD_PROMPT_CONFIG,
@@ -736,6 +737,11 @@ class SelfRewardingTrainer(Module):
 
         if isinstance(self_reward_prompt_config, RewardConfig):
             self_reward_prompt_config = dict(default = self_reward_prompt_config)
+
+        # finetune config
+
+        if isinstance(finetune_configs, dict):
+            finetune_configs = create_default_paper_config(**finetune_configs)
 
         # model and accelerator
 
