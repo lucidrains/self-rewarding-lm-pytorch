@@ -187,6 +187,7 @@ trainer()
 - [ ] figure out how best to handle different impl of kv cache, for now just do without
 - [ ] consider KTO
 - [ ] allow for a validation function on the rewards (say reward must be integer, float, in between some range etc)
+- [ ] environment flag that auto-clears all checkpoint folders
 
 ## Citation
 
