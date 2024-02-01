@@ -623,7 +623,7 @@ class FinetuneConfig:
 
 @dataclass
 class SFTConfig(FinetuneConfig):
-    train_dataset: Dataset
+    train_dataset: Union[Dataset, List[Dataset]]
     valid_dataset: Optional[Dataset] = None
     dropout: float = 0.1
     trainer_kwargs: dict = field(default_factory = dict)
@@ -677,7 +677,7 @@ class SelfPlayConfig(FinetuneConfig):
 @beartype
 def create_default_paper_config(
     *,
-    train_sft_dataset: Dataset,
+    train_sft_dataset: Union[Dataset, List[Dataset]],
     self_reward_prompt_dataset: Union[Dataset, Tuple[Dataset, Dataset]],
     valid_sft_dataset: Optional[Dataset] = None,
     num_generated_preference_pairs = (3964, 6942),
