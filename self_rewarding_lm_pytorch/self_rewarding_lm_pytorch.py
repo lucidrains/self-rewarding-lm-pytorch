@@ -402,6 +402,7 @@ class DPODatasetGenerator(Module):
         self_reward_memmap_file: str = 'self_reward.memmap.npy',
         preference_max_seq_len: int = 1024,
         generate_reward_max_seq_len: int = 256,
+        is_valid_reward: Callable[float, bool] = lambda *args: True,
         is_valid_reward_pair: Optional[Callable[[float, float], bool]] = None,
         pick_paired_rewards: Callable[[Tensor], Tensor] = default_pick_paired_rewards_fn,
         pad_id: int = -1
@@ -432,8 +433,9 @@ class DPODatasetGenerator(Module):
 
         # logic for sampling the reward pair and to validate it before adding it to generated preference dataset
 
-        self.pick_paired_rewards = pick_paired_rewards
+        self.is_valid_reward = is_valid_reward
         self.is_valid_reward_pair = default(is_valid_reward_pair, lambda *args: True)
+        self.pick_paired_rewards = pick_paired_rewards
 
         # prepare external reward model, if passed in
 
@@ -559,6 +561,8 @@ class DPODatasetGenerator(Module):
 
                     rewards: List[Optional[float]] = [self.generate_reward(prompt, response) for response in candidate_responses]
 
+                    rewards = [reward if exists(reward) and self.is_valid_reward(reward) else None for reward in rewards]
+
                     # turn rewards into a Tensor
 
                     rewards_tensor = Tensor([default(reward, float('nan')) for reward in rewards])
@@ -638,8 +642,9 @@ class SelfRewardDPOConfig(FinetuneConfig):
     dpo_beta: float = 0.1
     max_seq_len: int = 1024
     self_reward_config_keyname: str = 'default'
+    is_valid_reward: Callable[float, bool] = lambda reward: reward >= 0
     is_valid_reward_pair: Callable[[Tensor, Tensor], bool] = default_is_valid_reward_pair
-    is_picked_pair_reward_fn: Callable[[Tensor], Tensor] = default_pick_paired_rewards_fn
+    pick_paired_rewards_fn: Callable[[Tensor], Tensor] = default_pick_paired_rewards_fn
     dropout: float = 0.1
     early_stopper_eval_module: Optional[Module] = None
     num_train_steps: Optional[Module] = None
@@ -790,7 +795,7 @@ class SelfRewardingTrainer(Module):
                     tokenizer_encode = tokenizer_encode,
                     tokenizer_decode = tokenizer_decode,
                     is_valid_reward_pair = config.is_valid_reward_pair,
-                    pick_paired_rewards = config.is_picked_pair_reward_fn,
+                    pick_paired_rewards = config.pick_paired_rewards_fn,
                     gen_temperature = config.gen_temperature,
                     gen_filter_fn = config.gen_filter_fn,
                     gen_filter_kwargs = config.gen_filter_kwargs,
@@ -828,8 +833,9 @@ class SelfRewardingTrainer(Module):
                     preference_max_seq_len = config.max_seq_len,
                     tokenizer_encode = tokenizer_encode,
                     tokenizer_decode = tokenizer_decode,
+                    is_valid_reward = config.is_valid_reward,
                     is_valid_reward_pair = config.is_valid_reward_pair,
-                    pick_paired_rewards = config.is_pick_paired_rewards,
+                    pick_paired_rewards = config.pick_paired_rewards,
                     gen_temperature = config.gen_temperature,
                     gen_filter_fn = config.gen_filter_fn,
                     gen_filter_kwargs = config.gen_filter_kwargs,

@@ -183,10 +183,9 @@ trainer()
     - [x] handle break signal if all done on main process
     - [x] accept eval module, could be either validation loss or something more sophisticated. returns a scalar tensor or single int / float
 - [x] any order of sft, spin, self-rewarding dpo, dpo with external reward model
+- [x] allow for a validation function on the rewards (say reward must be integer, float, in between some range etc)
 
 - [ ] figure out how best to handle different impl of kv cache, for now just do without
-- [ ] consider KTO
-- [ ] allow for a validation function on the rewards (say reward must be integer, float, in between some range etc)
 - [ ] environment flag that auto-clears all checkpoint folders
 
 ## Citation
