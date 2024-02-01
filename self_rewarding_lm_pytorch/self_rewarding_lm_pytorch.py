@@ -1,5 +1,6 @@
 import re
 import sys
+from functools import partial
 from random import randrange
 from copy import deepcopy
 from pathlib import Path
@@ -386,9 +387,11 @@ class DPODatasetGenerator(Module):
         batch_size: int = 16,
         num_candidate_responses: int = 4,
         gen_temperature: float = 0.7,
-        gen_nucleus_p: float = 0.9,
+        gen_filter_fn = top_p,
+        gen_filter_kwargs: dict = dict(thres = 0.9),
         eval_temperature: float = 0.7,
-        eval_nucleus_p: float = 0.9,
+        eval_filter_fn = top_p,
+        eval_filter_kwargs: dict = dict(thres = 0.9),
         num_evals_to_average: int = 3,
         *,
         reward_config: RewardConfig,
@@ -414,10 +417,12 @@ class DPODatasetGenerator(Module):
         self.prompt_dataset = prompt_dataset
         self.prompt_dataloader = DataLoader(prompt_dataset, batch_size = batch_size, shuffle = True)
 
-        self.gen_nucleus_p = gen_nucleus_p
+        self.gen_filter_fn = gen_filter_fn
+        self.gen_filter_kwargs = gen_filter_kwargs
         self.gen_temperature = gen_temperature
 
-        self.eval_nucleus_p = eval_nucleus_p
+        self.eval_filter_fn = eval_filter_fn
+        self.eval_filter_kwargs = eval_filter_kwargs
         self.eval_temperature = eval_temperature
 
         self.tokenizer_encode = cast_output(lambda t: t.long())(tokenizer_encode)
@@ -494,10 +499,8 @@ class DPODatasetGenerator(Module):
             prompts = reward_prompt,
             seq_len = self.generate_reward_max_seq_len,
             temperature = self.eval_temperature,
-            filter_fn = top_p, 
-            filter_kwargs = dict(
-                thres = self.eval_nucleus_p
-            )
+            filter_fn = self.eval_filter_fn,
+            filter_kwargs = self.eval_filter_kwargs
         )
 
         reward_responses_as_str: List[str] = [self.tokenizer_decode(resp[resp != self.pad_id].cpu()) for resp in reward_responses]
@@ -541,10 +544,8 @@ class DPODatasetGenerator(Module):
                     prompts = repeated_prompt_tensor,
                     seq_len = self.preference_max_seq_len,
                     temperature = self.gen_temperature,
-                    filter_fn = top_p,
-                    filter_kwargs = dict(
-                        thres = self.gen_nucleus_p
-                    )
+                    filter_fn = self.gen_filter_fn,
+                    filter_kwargs = self.gen_filter_kwargs
                 )
 
                 candidate_int_responses: List[List[int]] = [response.tolist() for response in candidate_tensor_responses]
@@ -621,12 +622,14 @@ class DPODatasetGenerator(Module):
 class FinetuneConfig:
     pass
 
+default_dict = partial(field, default_factory = dict)
+
 @dataclass
 class SFTConfig(FinetuneConfig):
     train_dataset: Union[Dataset, List[Dataset]]
     valid_dataset: Optional[Dataset] = None
     dropout: float = 0.1
-    trainer_kwargs: dict = field(default_factory = dict)
+    trainer_kwargs: dict = default_dict()
 
 @dataclass
 class SelfRewardDPOConfig(FinetuneConfig):
@@ -643,22 +646,25 @@ class SelfRewardDPOConfig(FinetuneConfig):
     num_candidate_responses: int = 4
     num_sampled_reward_responses: int = 3
     gen_temperature: float = 0.7
-    gen_filter_fn: Callable = top_p,
-    gen_filter_kwargs: dict = field(default_factory = dict)
+    gen_filter_fn: Callable = top_p
+    gen_filter_kwargs: dict = default_dict()
     eval_temperature: float = 0.7
-    eval_filter_fn: Callable = top_p,
-    eval_filter_kwargs: dict = field(default_factory = dict)
+    eval_filter_fn: Callable = top_p
+    eval_filter_kwargs: dict = default_dict()
     trainer_kwargs: dict = field(default_factory = dict)
-    reward_generator_kwargs: dict = field(default_factory = dict)
+    reward_generator_kwargs: dict = default_dict()
 
 @dataclass
 class ExternalRewardDPOConfig(FinetuneConfig):
     reward_model: Module
     dpo_beta: float = 0.1
     max_seq_len: int = 1024
+    gen_temperature: float = 0.7
+    gen_filter_fn: Callable = top_p
+    gen_filter_kwargs: dict = default_dict()
     dropout: float = 0.1
-    trainer_kwargs: dict = field(default_factory = dict)
-    reward_generator_kwargs: dict = field(default_factory = dict)
+    trainer_kwargs: dict = default_dict()
+    reward_generator_kwargs: dict = default_dict()
 
 @dataclass
 class SelfPlayConfig(FinetuneConfig):
@@ -667,10 +673,11 @@ class SelfPlayConfig(FinetuneConfig):
     max_seq_len: int = 1024
     spin_λ: float = 0.1
     dropout: float = 0.1
-    gen_temperature: float = 0.7
-    gen_filter_fn: Callable = top_p
-    gen_filter_kwargs: dict = field(default_factory = dict)
-    trainer_kwargs: dict = field(default_factory = dict)
+    temperature: float = 0.7
+    filter_fn: Callable = top_p
+    filter_kwargs: dict = default_dict()
+    trainer_kwargs: dict = default_dict()
+    spin_kwargs: dict =  default_dict()
 
 # generated default config for paper
 
@@ -727,11 +734,7 @@ class SelfRewardingTrainer(Module):
         self_reward_prompt_config: Union[RewardConfig, Dict[str, RewardConfig]] = SELF_REWARD_PROMPT_CONFIG,
         pad_id: int = -1,
         checkpoints_folder: str = './checkpoints',
-        accelerate_kwargs: dict = dict(),
-        sft_trainer_kwargs: dict = dict(),
-        spin_trainer_kwargs: dict = dict(),
-        spin_kwargs: dict = dict(),
-        dpo_trainer_kwargs: dict = dict(),
+        accelerate_kwargs: dict = dict()
     ):
         super().__init__()
 
@@ -788,6 +791,12 @@ class SelfRewardingTrainer(Module):
                     tokenizer_decode = tokenizer_decode,
                     is_valid_reward_pair = config.is_valid_reward_pair,
                     pick_paired_rewards = config.is_picked_pair_reward_fn,
+                    gen_temperature = config.gen_temperature,
+                    gen_filter_fn = config.gen_filter_fn,
+                    gen_filter_kwargs = config.gen_filter_kwargs,
+                    eval_temperature = config.eval_temperature,
+                    eval_filter_fn = config.eval_filter_fn,
+                    eval_filter_kwargs = config.eval_filter_kwargs,
                     **config.reward_generator_kwargs
                 )
 
@@ -811,19 +820,23 @@ class SelfRewardingTrainer(Module):
 
             elif isinstance(config, ExternalRewardDPOConfig):
 
-                reward_model = self.accelerator.prepare(config.reward_model)
-
                 self_reward_dataset_generator = DPODatasetGenerator(
                     model = model,
                     prompt_dataset = config.prompt_dataset,
-                    reward_model = reward_model,
+                    reward_model = config.reward_model,
                     num_preference_pairs = config.num_generated_preference_pairs,
                     preference_max_seq_len = config.max_seq_len,
                     tokenizer_encode = tokenizer_encode,
                     tokenizer_decode = tokenizer_decode,
                     is_valid_reward_pair = config.is_valid_reward_pair,
                     pick_paired_rewards = config.is_pick_paired_rewards,
-                    **reward_generator_kwargs
+                    gen_temperature = config.gen_temperature,
+                    gen_filter_fn = config.gen_filter_fn,
+                    gen_filter_kwargs = config.gen_filter_kwargs,
+                    eval_temperature = config.eval_temperature,
+                    eval_filter_fn = config.eval_filter_fn,
+                    eval_filter_kwargs = config.eval_filter_kwargs,
+                    **config.reward_generator_kwargs
                 )
 
                 trainer = DPOTrainer(
@@ -839,12 +852,13 @@ class SelfRewardingTrainer(Module):
                         beta = config.dpo_beta,
                         pad_id = pad_id
                     ),
-                    **dpo_trainer_kwargs
+                    **config.dpo_trainer_kwargs
                 )
 
                 self.trainers.append(('dpo', trainer))
 
             elif isinstance(config, SelfPlayConfig):
+
                 trainer = SPINTrainer(
                     self.model,
                     accelerator = self.accelerator,
@@ -853,9 +867,12 @@ class SelfRewardingTrainer(Module):
                     valid_sft_dataset = config.valid_dataset,
                     max_seq_len = config.max_seq_len,
                     pad_id = pad_id,
+                    temperature = config.temperature,
+                    filter_fn = config.filter_fn,
+                    filter_kwargs = config.filter_kwargs,
                     spin_kwargs = {
                         'λ': config.spin_λ,
-                        **spin_kwargs
+                        **config.spin_kwargs
                     }
                 )
 

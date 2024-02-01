@@ -172,7 +172,8 @@ class SPINTrainer(Module):
         weight_decay = 0.,
         adam_kwargs: dict = dict(),
         temperature = 0.7,
-        nucleus_p = 0.9,
+        filter_fn = top_p,
+        filter_kwargs = dict(thres = 0.9),
         pad_id: int = -1,
         ref_model_ema_decay = 1.,
         checkpoint_every = None,
@@ -221,9 +222,13 @@ class SPINTrainer(Module):
         )
 
         self.max_seq_len = max_seq_len
-        self.temperature = temperature
-        self.nucleus_p = nucleus_p
         self.pad_id = pad_id
+
+        # sampling
+
+        self.temperature = temperature
+        self.filter_fn = filter_fn
+        self.filter_kwargs = filter_kwargs
 
         # validation
 
@@ -289,10 +294,8 @@ class SPINTrainer(Module):
             prompts = prompts,
             seq_len = self.max_seq_len,
             temperature = self.temperature,
-            filter_fn = top_p,
-            filter_kwargs = dict(
-                thres = self.nucleus_p
-            ),
+            filter_fn = self.filter_fn,
+            filter_kwargs = self.filter_kwargs,
             output_keep_prompt = True
         )
 
