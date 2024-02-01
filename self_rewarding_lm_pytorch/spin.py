@@ -276,8 +276,6 @@ class SPINTrainer(Module):
 
             torch.save(pkg, str(path))
 
-        self.wait()
-
     def calc_spin_loss(
         self,
         real_seq: TensorType['b', 'n', int],
@@ -343,8 +341,6 @@ class SPINTrainer(Module):
 
             self.unwrapped_model.update_ema()
 
-            self.wait()
-
             if exists(self.valid_dataloader) and not (self.valid_every % self.steps):
                 self.wait()
 
@@ -366,8 +362,6 @@ class SPINTrainer(Module):
 
                         self.print(f'valid spin loss: {valid_loss.item():.3f}')
                         self.log(valid_spin_loss = valid_loss.item())
-
-                self.wait()
 
             if self.should_checkpoint and not (self.checkpoint_every % self.steps):
                 checkpoint_num = self.steps // self.checkpoint_every

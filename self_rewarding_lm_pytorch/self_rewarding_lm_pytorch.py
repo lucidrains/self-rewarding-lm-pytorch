@@ -93,8 +93,10 @@ def prompt_mask_from_len(length, seq):
     seq_len, device = seq.shape[-1], seq.device
     return torch.arange(seq_len, device = device) < rearrange(length, '... -> ... 1')
 
-def cast_tuple(t, length = 1):
-    return t if isinstance(t, tuple) else ((t,) * length)
+def cast_tuple(t, length = 1, validate = False):
+    out = t if isinstance(t, tuple) else ((t,) * length)
+    assert not validate or len(out) == length
+    return out
 
 def cast_input(cast_fn):
     def decorator(fn):
@@ -328,7 +330,7 @@ class SFTTrainer(Module):
 
         set_dropout_(self.model, self.dropout)
 
-        for _ in tqdm(range(self.num_train_steps)):
+        for _ in tqdm(range(self.num_train_steps), desc = 'sft fine-tuning'):
             self.model.train()
 
             for forward_context in model_forward_contexts(self.accelerator, self.model, self.grad_accum_steps):
@@ -367,8 +369,6 @@ class SFTTrainer(Module):
                     valid_loss = total_valid_loss / total_batches
 
                     self.log(valid_loss = valid_loss)
-
-                self.wait()
 
 # reward generator class
 
@@ -671,8 +671,7 @@ class SelfRewardingTrainer(Module):
 
         # prompts need to be pre-generated. in paper, it seems to be coming from llama 70B chat
 
-        prompt_dataset = cast_tuple(prompt_dataset, self_reward_num_iterations)
-        assert len(prompt_dataset) == self_reward_num_iterations
+        prompt_dataset = cast_tuple(prompt_dataset, self_reward_num_iterations, validate = True)
 
         # model and accelerator
 
@@ -680,15 +679,16 @@ class SelfRewardingTrainer(Module):
 
         self.accelerator = Accelerator(**accelerate_kwargs)
 
+        # all trainers
+
+        self.trainers = []
+
         # sft
 
-        self.sft_trainer = None
-        self.first_iterate_on_sft = initial_sft
-
-        if self.first_iterate_on_sft:
+        if initial_sft:
             assert exists(train_sft_dataset)
 
-            self.sft_trainer = SFTTrainer(
+            sft_trainer = SFTTrainer(
                 model,
                 accelerator = self.accelerator,
                 dropout = dropout,
@@ -697,13 +697,12 @@ class SelfRewardingTrainer(Module):
                 **sft_trainer_kwargs
             )
 
+            self.trainers.append(('sft', sft_trainer))
+
         # spin
 
-        self.spin_trainers = []
-
-        assert len(self.spin_trainers) == 0 or exists(train_sft_dataset)
-
         for _ in range(num_spin_cycles):
+            assert exists(train_sft_dataset)
 
             spin_trainer = SPINTrainer(
                 self.model,
@@ -719,18 +718,15 @@ class SelfRewardingTrainer(Module):
                 }
             )
 
-            self.spin_trainers.append(spin_trainer)
+            self.trainers.append(('spin', spin_trainer))
 
         # external reward model (not in paper, but just allow for it)
 
-        reward_model = cast_tuple(reward_model, self_reward_num_iterations)
-        assert len(reward_model) == self_reward_num_iterations
+        reward_model = cast_tuple(reward_model, self_reward_num_iterations, validate = True)
 
         reward_models = [self.accelerator.prepare(model) if exists(model) else None for model in reward_model]
 
         # self-reward related
-
-        self.dpo_trainers = []
 
         self.reward_prompt_configs = [reward_prompt_config[key] for key in reward_iteration_type]
         self.self_reward_num_iterations = self_reward_num_iterations
@@ -768,7 +764,7 @@ class SelfRewardingTrainer(Module):
                 **dpo_trainer_kwargs
             )
 
-            self.dpo_trainers.append(trainer)
+            self.trainers.append(('dpo', trainer))
 
         # checkpoints folder
 
@@ -801,32 +797,15 @@ class SelfRewardingTrainer(Module):
 
             torch.save(pkg, str(path))
 
-        self.wait()
-
     def forward(
         self,
         overwrite_checkpoints: bool = False
     ):
 
-        if self.first_iterate_on_sft:
-            self.sft_trainer()
+        for ind, (trainer_type, trainer) in enumerate(self.trainers):
+            finetuning_stage = ind + 1
+            trainer()
 
-            self.save('sft.ckpt.pt', overwrite = overwrite_checkpoints)
-
-        for ind, spin_trainer in enumerate(self.spin_trainers):
-            spin_cycle = ind + 1
-
-            spin_trainer()
-
-            self.save(f'spin.{spin_cycle}.ckpt.pt', overwrite = overwrite_checkpoints)
-
-
-        for ind, dpo_trainer in enumerate(self.dpo_trainers):
-
-            iterate_num = ind + 1
-
-            dpo_trainer()
-
-            self.save(f'self-reward.{iterate_num}.ckpt.pt', overwrite = overwrite_checkpoints)
+            self.save(f'{finetuning_stage}.{trainer_type}.ckpt.pt')
 
         self.print(f'self-reward training done')

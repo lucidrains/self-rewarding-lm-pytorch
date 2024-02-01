@@ -160,8 +160,6 @@ class EarlyStopper(Module):
 
             torch.save(pkg, str(path))
 
-        self.wait()
-
     @torch.no_grad()
     def forward(self) -> EarlyStopperReturn:
         self.model.eval()
@@ -481,8 +479,6 @@ class DPOTrainer(Module):
 
             self.unwrapped_model.update_ema()
 
-            self.wait()
-
             self.steps += 1
             pbar.update(1)
 
@@ -505,8 +501,6 @@ class DPOTrainer(Module):
                 if early_stop_return.should_stop:
                     self.print('early stopping')
                     break
-
-            self.wait()
 
         pbar.close()
         self.print('dpo training finished')
