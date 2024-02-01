@@ -5,7 +5,7 @@ from beartype.typing import Optional, Callable, Union
 from torchtyping import TensorType
 
 import torch
-from torch.nn import Module
+from torch.nn import Module, Dropout
 import torch.nn.functional as F
 from torch.cuda.amp import autocast
 from torch.utils.data import Dataset, DataLoader
@@ -57,6 +57,11 @@ def log_prob_from_model_and_seq(model, seq):
 def prompt_mask_from_len(lengths, seq):
     seq_len, device = seq.shape[-1], seq.device
     return torch.arange(seq_len, device = device) < rearrange(lengths, '... -> ... 1')
+
+def set_dropout_(model: Module, prob: float):
+    for module in model.modules():
+        if isinstance(module, Dropout):
+            module.p = prob
 
 # main class
 
@@ -163,6 +168,7 @@ class SPINTrainer(Module):
         start_learning_rate = 1e-6,
         end_learning_rate = 1e-7,
         learning_rate_num_decay_steps = 1000,
+        dropout = 0.,
         weight_decay = 0.,
         adam_kwargs: dict = dict(),
         temperature = 0.7,
@@ -190,6 +196,7 @@ class SPINTrainer(Module):
             )
 
         self.model = model
+        self.dropout = dropout
         self.train_dataloader = DataLoader(train_sft_dataset, batch_size = batch_size, shuffle = True, drop_last = True)
 
         self.grad_accum_steps = grad_accum_steps
@@ -307,7 +314,8 @@ class SPINTrainer(Module):
         self.model.update_reference_model_with_policy()
 
         self.steps = 0
-        self.model.train()
+
+        set_dropout_(self.model, self.dropout)
 
         train_dataloader_iter = cycle(self.train_dataloader)
 

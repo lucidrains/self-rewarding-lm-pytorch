@@ -14,7 +14,7 @@ from torchtyping import TensorType
 import torch
 from torch import Tensor
 import torch.nn.functional as F
-from torch.nn import Module, ModuleList
+from torch.nn import Module, ModuleList, Dropout
 from torch.utils.data import Dataset, ConcatDataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
@@ -239,6 +239,7 @@ class SFTTrainer(Module):
         start_learning_rate: float = 5.5e-6,
         end_learning_rate: float = 1.1e-6,
         learning_rate_num_decay_steps: Optional[int] = None,
+        dropout: float = 0.,
         weight_decay: float = 0.,
         ignore_index: int = -1,
         adam_kwargs: dict = dict(),
@@ -247,6 +248,7 @@ class SFTTrainer(Module):
         super().__init__()
         self.accelerator = accelerator
         self.model = model
+        self.dropout = dropout
 
         self.num_epochs = num_epochs
         self.ignore_index = ignore_index
@@ -322,11 +324,12 @@ class SFTTrainer(Module):
 
     def forward(self):
 
-        self.model.train()
-
         train_dl_iter = cycle(self.train_dataloader)
 
+        set_dropout_(self.model, self.dropout)
+
         for _ in tqdm(range(self.num_train_steps)):
+            self.model.train()
 
             for forward_context in model_forward_contexts(self.accelerator, self.model, self.grad_accum_steps):
                 with forward_context():
@@ -688,6 +691,7 @@ class SelfRewardingTrainer(Module):
             self.sft_trainer = SFTTrainer(
                 model,
                 accelerator = self.accelerator,
+                dropout = dropout,
                 train_dataset = train_sft_dataset,
                 valid_dataset = valid_sft_dataset,
                 **sft_trainer_kwargs
@@ -704,6 +708,7 @@ class SelfRewardingTrainer(Module):
             spin_trainer = SPINTrainer(
                 self.model,
                 accelerator = self.accelerator,
+                dropout = dropout,
                 train_sft_dataset = train_sft_dataset,
                 valid_sft_dataset = valid_sft_dataset,
                 max_seq_len = spin_trainer_kwargs.pop('max_seq_len', preference_max_seq_len),
@@ -725,13 +730,15 @@ class SelfRewardingTrainer(Module):
 
         # self-reward related
 
+        self.dpo_trainers = []
+
         self.reward_prompt_configs = [reward_prompt_config[key] for key in reward_iteration_type]
         self.self_reward_num_iterations = self_reward_num_iterations
 
-        self.dpo_dataset_generators = []
+        for ind, reward_config, one_prompt_dataset, one_stage_num_preference_pairs, one_reward_model in zip(range(self_reward_num_iterations), self.reward_prompt_configs, prompt_dataset, num_preference_pairs, reward_model):
+            dpo_iteration = ind + 1
 
-        for reward_config, one_prompt_dataset, one_stage_num_preference_pairs, one_reward_model in zip(self.reward_prompt_configs, prompt_dataset, num_preference_pairs, reward_model):
-            self.dpo_dataset_generators.append(DPODatasetGenerator(
+            self_reward_dataset_generator = DPODatasetGenerator(
                 model = model,
                 prompt_dataset = one_prompt_dataset,
                 reward_config = reward_config,
@@ -743,20 +750,13 @@ class SelfRewardingTrainer(Module):
                 is_valid_reward_pair = is_valid_reward_pair,
                 pick_paired_rewards = pick_paired_rewards,
                 **reward_generator_kwargs
-            ))
-
-        # dpo
-
-        set_dropout_(model, dropout)
-
-        self.dpo_trainers = []
-
-        for ind in range(self_reward_num_iterations):
-            dpo_iteration = ind + 1
+            )
 
             trainer = DPOTrainer(
                 dpo = model,
                 accelerator = self.accelerator,
+                dataset_generator = self_reward_dataset_generator,
+                dropout = dropout,
                 early_stopper_eval_module = early_stopper_eval_module,
                 early_stopper_kwargs = dict(
                     early_stop_checkpoint_folder = f'./early-stop-checkpoint.{dpo_iteration}',
@@ -821,13 +821,11 @@ class SelfRewardingTrainer(Module):
             self.save(f'spin.{spin_cycle}.ckpt.pt', overwrite = overwrite_checkpoints)
 
 
-        for ind, (dpo_dataset_generator, dpo_trainer) in enumerate(zip(self.dpo_dataset_generators, self.dpo_trainers)):
+        for ind, dpo_trainer in enumerate(self.dpo_trainers):
 
             iterate_num = ind + 1
 
-            dpo_dataset_from_self_reward = dpo_dataset_generator()
-
-            dpo_trainer(dpo_dataset_from_self_reward)
+            dpo_trainer()
 
             self.save(f'self-reward.{iterate_num}.ckpt.pt', overwrite = overwrite_checkpoints)
 

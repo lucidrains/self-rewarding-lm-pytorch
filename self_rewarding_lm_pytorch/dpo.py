@@ -342,6 +342,7 @@ class DPOTrainer(Module):
         self,
         dpo: Union[DPO, Module],
         *,
+        dataset_generator: Optional[Callable[[], Dataset]] = None,
         accelerator: Optional[Accelerator] = None,
         batch_size: int = 16,
         grad_accum_steps: int = 2,
@@ -378,6 +379,9 @@ class DPOTrainer(Module):
         self.accelerator = accelerator
 
         self.model = accelerator.prepare(dpo)
+        self.dropout = dropout
+
+        self.dataset_generator = dataset_generator
 
         self.batch_size = batch_size
         self.grad_accum_steps = grad_accum_steps
@@ -436,6 +440,9 @@ class DPOTrainer(Module):
         self,
         train_self_reward_dataset: Optional[Dataset] = None
     ):
+        if exists(self.dataset_generator):
+            train_self_reward_dataset = self.dataset_generator()
+
         self.model.update_reference_model_with_policy()
 
         if exists(self.early_stopper):
@@ -451,6 +458,8 @@ class DPOTrainer(Module):
         iter_dl = cycle(train_dataloader)
 
         pbar = tqdm(desc = 'dpo finetuning', total = self.num_train_steps)
+
+        set_dropout_(self.model, self.dropout)
 
         while True:
             self.model.train()
