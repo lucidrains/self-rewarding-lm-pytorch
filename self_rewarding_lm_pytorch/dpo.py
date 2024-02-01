@@ -455,7 +455,7 @@ class DPOTrainer(Module):
 
         iter_dl = cycle(train_dataloader)
 
-        pbar = tqdm(desc = 'dpo finetuning', total = self.num_train_steps)
+        pbar = tqdm(desc = 'dpo fine-tuning', total = self.num_train_steps)
 
         set_dropout_(self.model, self.dropout)
 

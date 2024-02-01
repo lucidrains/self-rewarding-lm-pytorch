@@ -3,7 +3,7 @@ import sys
 from random import randrange
 from copy import deepcopy
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import wraps
 from textwrap import dedent
 
@@ -209,12 +209,14 @@ class RewardConfig:
 # config, allowing for different types of reward prompting
 # colocate with functions for extracting the response and reward
 
-REWARD_PROMPT_CONFIG = dict(
+SELF_REWARD_PROMPT_CONFIG = dict(
     default = RewardConfig(
         prompt_template = DEFAULT_LLM_AS_JUDGE_PROMPT,
         reward_regex_template = DEFAULT_REWARD_REGEX_TEMPLATE
     )
 )
+
+default_is_valid_reward_pair = lambda preferred_reward, unpreferred_reward: (preferred_reward != unpreferred_reward).all()
 
 @beartype
 def default_pick_paired_rewards_fn(rewards: Tensor):
@@ -614,6 +616,102 @@ class DPODatasetGenerator(Module):
 
         return DPODataset(**self.dpo_dataset_kwargs)
 
+# fine tuning configs
+
+class FinetuneConfig:
+    pass
+
+@dataclass
+class SFTConfig(FinetuneConfig):
+    train_dataset: Dataset
+    valid_dataset: Optional[Dataset] = None
+    dropout: float = 0.1
+    trainer_kwargs: dict = field(default_factory = dict)
+
+@dataclass
+class SelfRewardDPOConfig(FinetuneConfig):
+    prompt_dataset: Dataset
+    num_generated_preference_pairs: int
+    dpo_beta: float = 0.1
+    max_seq_len: int = 1024
+    self_reward_config_keyname: str = 'default'
+    is_valid_reward_pair: Callable[[Tensor, Tensor], bool] = default_is_valid_reward_pair
+    is_picked_pair_reward_fn: Callable[[Tensor], Tensor] = default_pick_paired_rewards_fn
+    dropout: float = 0.1
+    early_stopper_eval_module: Optional[Module] = None
+    num_train_steps: Optional[Module] = None
+    num_candidate_responses: int = 4
+    num_sampled_reward_responses: int = 3
+    gen_temperature: float = 0.7
+    gen_filter_fn: Callable = top_p,
+    gen_filter_kwargs: dict = field(default_factory = dict)
+    eval_temperature: float = 0.7
+    eval_filter_fn: Callable = top_p,
+    eval_filter_kwargs: dict = field(default_factory = dict)
+    trainer_kwargs: dict = field(default_factory = dict)
+    reward_generator_kwargs: dict = field(default_factory = dict)
+
+@dataclass
+class ExternalRewardDPOConfig(FinetuneConfig):
+    reward_model: Module
+    dpo_beta: float = 0.1
+    max_seq_len: int = 1024
+    dropout: float = 0.1
+    trainer_kwargs: dict = field(default_factory = dict)
+    reward_generator_kwargs: dict = field(default_factory = dict)
+
+@dataclass
+class SelfPlayConfig(FinetuneConfig):
+    train_dataset: Dataset
+    valid_dataset: Optional[Dataset] = None
+    max_seq_len: int = 1024
+    spin_λ: float = 0.1
+    dropout: float = 0.1
+    gen_temperature: float = 0.7
+    gen_filter_fn: Callable = top_p
+    gen_filter_kwargs: dict = field(default_factory = dict)
+    trainer_kwargs: dict = field(default_factory = dict)
+
+# generated default config for paper
+
+def create_default_paper_config(
+    *,
+    train_sft_dataset: Dataset,
+    self_reward_prompt_dataset: Union[Dataset, Tuple[Dataset, Dataset]],
+    valid_sft_dataset: Optional[Dataset] = None,
+    num_generated_preference_pairs = (3964, 6942),
+    early_stopper_eval_module: Optional[Module] = None,
+    dpo_num_train_steps: Optional[int] = None,
+    sft_config: dict = dict(),
+    self_reward_config: dict = dict()
+
+) -> List[FinetuneConfig]:
+
+    prompt_dataset_iter1, prompt_dataset_iter2 = cast_tuple(self_reward_prompt_dataset, 2, validate = True)
+    num_generated_iter1, num_generated_iter2 = num_generated_preference_pairs
+
+    return [
+        SFTConfig(
+            train_dataset = train_sft_dataset,
+            valid_dataset = valid_sft_dataset,
+            **sft_config
+        ),
+        SelfRewardDPOConfig(
+            num_generated_preference_pairs = num_generated_iter1,
+            prompt_dataset = prompt_dataset_iter1,
+            num_train_steps = dpo_num_train_steps,
+            early_stopper_eval_module = early_stopper_eval_module,
+            **self_reward_config
+        ),
+        SelfRewardDPOConfig(
+            num_generated_preference_pairs = num_generated_iter2,
+            prompt_dataset = prompt_dataset_iter2,
+            num_train_steps = dpo_num_train_steps,
+            early_stopper_eval_module = early_stopper_eval_module,
+            **self_reward_config
+        )
+    ]
+
 # self-rewarding trainer class
 
 class SelfRewardingTrainer(Module):
@@ -622,38 +720,10 @@ class SelfRewardingTrainer(Module):
         self,
         model: Module,
         *,
+        finetune_configs: List[FinetuneConfig],
         tokenizer_encode: Callable[[str], TensorType['seq', int]],
         tokenizer_decode: Callable[[TensorType['seq', int]], str],
-        prompt_dataset: Union[Tuple[Dataset, ...], Dataset],
-        train_sft_dataset: Optional[Union[Tuple[Dataset], Dataset]] = None,
-        valid_sft_dataset: Optional[Dataset] = None,
-        initial_sft: bool = True,
-        dpo_beta = 0.1,
-        num_spin_cycles = 0,
-        spin_λ  = 0.1,
-        preference_max_seq_len: int = 1024,
-        self_reward_num_iterations = 2,
-        reward_prompt_config: Union[RewardConfig, Dict[str, RewardConfig]] = REWARD_PROMPT_CONFIG,
-        reward_iteration_type = [
-            'default',
-            'default'
-        ],
-        reward_model: Tuple[Optional[Module], ...] = (None, None),
-        is_valid_reward_pair: Optional[Callable[[Tensor, Tensor], bool]] = lambda preferred_reward, unpreferred_reward: (preferred_reward != unpreferred_reward).all(),
-        pick_paired_rewards: Callable[[Tensor], Tensor] = default_pick_paired_rewards_fn,
-        num_preference_pairs: List[int] = [
-            3964,
-            6942
-        ],
-        reward_generator_kwargs: dict = dict(
-            num_candidate_responses = 4,
-            gen_temperature = 0.7,
-            gen_nucleus_p = 0.9,
-            eval_temperature = 0.7,
-            eval_nucleus_p = 0.9
-        ),
-        early_stopper_eval_module: Optional[Module] = None,
-        dropout: float = 0.1,
+        self_reward_prompt_config: Union[RewardConfig, Dict[str, RewardConfig]] = SELF_REWARD_PROMPT_CONFIG,
         pad_id: int = -1,
         checkpoints_folder: str = './checkpoints',
         accelerate_kwargs: dict = dict(),
@@ -664,14 +734,8 @@ class SelfRewardingTrainer(Module):
     ):
         super().__init__()
 
-        if isinstance(reward_prompt_config, RewardConfig):
-            reward_prompt_config = dict(default = reward_prompt_config)
-
-        assert all([key in reward_prompt_config for key in reward_iteration_type]), f'reward prompt must be one of {reward_prompt_config.keys()}'
-
-        # prompts need to be pre-generated. in paper, it seems to be coming from llama 70B chat
-
-        prompt_dataset = cast_tuple(prompt_dataset, self_reward_num_iterations, validate = True)
+        if isinstance(self_reward_prompt_config, RewardConfig):
+            self_reward_prompt_config = dict(default = self_reward_prompt_config)
 
         # model and accelerator
 
@@ -681,90 +745,120 @@ class SelfRewardingTrainer(Module):
 
         # all trainers
 
-        self.trainers = []
+        self.trainers: List[Tuple[str, Callable]] = []
 
-        # sft
+        # config -> trainers
 
-        if initial_sft:
-            assert exists(train_sft_dataset)
+        for ind, config in enumerate(finetune_configs):
+            finetune_stage = ind + 1
 
-            sft_trainer = SFTTrainer(
-                model,
-                accelerator = self.accelerator,
-                dropout = dropout,
-                train_dataset = train_sft_dataset,
-                valid_dataset = valid_sft_dataset,
-                **sft_trainer_kwargs
-            )
+            if isinstance(config, SFTConfig):
+                trainer = SFTTrainer(
+                    self.model,
+                    accelerator = self.accelerator,
+                    dropout = config.dropout,
+                    train_dataset = config.train_dataset,
+                    valid_dataset = config.valid_dataset,
+                    **config.trainer_kwargs
+                )
 
-            self.trainers.append(('sft', sft_trainer))
+                self.trainers.append(('sft', trainer))
 
-        # spin
+            elif isinstance(config, SelfRewardDPOConfig):
 
-        for _ in range(num_spin_cycles):
-            assert exists(train_sft_dataset)
+                assert exists(config.early_stopper_eval_module) ^ exists(config.num_train_steps), 'either a validation module is passed in for early stopping, or a max number of training steps is specified'
 
-            spin_trainer = SPINTrainer(
-                self.model,
-                accelerator = self.accelerator,
-                dropout = dropout,
-                train_sft_dataset = train_sft_dataset,
-                valid_sft_dataset = valid_sft_dataset,
-                max_seq_len = spin_trainer_kwargs.pop('max_seq_len', preference_max_seq_len),
-                pad_id = pad_id,
-                spin_kwargs = {
-                    'λ': spin_λ,
-                    **spin_kwargs
-                }
-            )
+                assert config.self_reward_config_keyname in self_reward_prompt_config, f'reward prompt must be one of {self_reward_prompt_config.keys()}'
 
-            self.trainers.append(('spin', spin_trainer))
+                self_reward_config = self_reward_prompt_config[config.self_reward_config_keyname]
 
-        # external reward model (not in paper, but just allow for it)
+                self_reward_dataset_generator = DPODatasetGenerator(
+                    model = model,
+                    prompt_dataset = config.prompt_dataset,
+                    reward_config = self_reward_config,
+                    num_preference_pairs = config.num_generated_preference_pairs,
+                    preference_max_seq_len = config.max_seq_len,
+                    tokenizer_encode = tokenizer_encode,
+                    tokenizer_decode = tokenizer_decode,
+                    is_valid_reward_pair = config.is_valid_reward_pair,
+                    pick_paired_rewards = config.is_picked_pair_reward_fn,
+                    **config.reward_generator_kwargs
+                )
 
-        reward_model = cast_tuple(reward_model, self_reward_num_iterations, validate = True)
+                trainer = DPOTrainer(
+                    dpo = model,
+                    accelerator = self.accelerator,
+                    dataset_generator = self_reward_dataset_generator,
+                    dropout = config.dropout,
+                    early_stopper_eval_module = config.early_stopper_eval_module,
+                    early_stopper_kwargs = dict(
+                        early_stop_checkpoint_folder = f'./early-stop-checkpoint.{finetune_stage}',
+                    ),
+                    dpo_kwargs = dict(
+                        beta = config.dpo_beta,
+                        pad_id = pad_id
+                    ),
+                    **config.trainer_kwargs
+                )
 
-        reward_models = [self.accelerator.prepare(model) if exists(model) else None for model in reward_model]
+                self.trainers.append(('dpo', trainer))
 
-        # self-reward related
+            elif isinstance(config, ExternalRewardDPOConfig):
 
-        self.reward_prompt_configs = [reward_prompt_config[key] for key in reward_iteration_type]
-        self.self_reward_num_iterations = self_reward_num_iterations
+                reward_model = self.accelerator.prepare(config.reward_model)
 
-        for ind, reward_config, one_prompt_dataset, one_stage_num_preference_pairs, one_reward_model in zip(range(self_reward_num_iterations), self.reward_prompt_configs, prompt_dataset, num_preference_pairs, reward_model):
-            dpo_iteration = ind + 1
+                self_reward_dataset_generator = DPODatasetGenerator(
+                    model = model,
+                    prompt_dataset = config.prompt_dataset,
+                    reward_model = reward_model,
+                    num_preference_pairs = config.num_generated_preference_pairs,
+                    preference_max_seq_len = config.max_seq_len,
+                    tokenizer_encode = tokenizer_encode,
+                    tokenizer_decode = tokenizer_decode,
+                    is_valid_reward_pair = config.is_valid_reward_pair,
+                    pick_paired_rewards = config.is_pick_paired_rewards,
+                    **reward_generator_kwargs
+                )
 
-            self_reward_dataset_generator = DPODatasetGenerator(
-                model = model,
-                prompt_dataset = one_prompt_dataset,
-                reward_config = reward_config,
-                reward_model = one_reward_model,
-                num_preference_pairs = one_stage_num_preference_pairs,
-                preference_max_seq_len = preference_max_seq_len,
-                tokenizer_encode = tokenizer_encode,
-                tokenizer_decode = tokenizer_decode,
-                is_valid_reward_pair = is_valid_reward_pair,
-                pick_paired_rewards = pick_paired_rewards,
-                **reward_generator_kwargs
-            )
+                trainer = DPOTrainer(
+                    dpo = model,
+                    accelerator = self.accelerator,
+                    dataset_generator = self_reward_dataset_generator,
+                    dropout = dropout,
+                    early_stopper_eval_module = config.early_stopper_eval_module,
+                    early_stopper_kwargs = dict(
+                        early_stop_checkpoint_folder = f'./early-stop-checkpoint.{dpo_iteration}',
+                    ),
+                    dpo_kwargs = dict(
+                        beta = config.dpo_beta,
+                        pad_id = pad_id
+                    ),
+                    **dpo_trainer_kwargs
+                )
 
-            trainer = DPOTrainer(
-                dpo = model,
-                accelerator = self.accelerator,
-                dataset_generator = self_reward_dataset_generator,
-                dropout = dropout,
-                early_stopper_eval_module = early_stopper_eval_module,
-                early_stopper_kwargs = dict(
-                    early_stop_checkpoint_folder = f'./early-stop-checkpoint.{dpo_iteration}',
-                ),
-                dpo_kwargs = dict(
-                    beta = dpo_beta,
-                    pad_id = pad_id
-                ),
-                **dpo_trainer_kwargs
-            )
+                self.trainers.append(('dpo', trainer))
 
-            self.trainers.append(('dpo', trainer))
+            elif isinstance(config, SelfPlayConfig):
+                trainer = SPINTrainer(
+                    self.model,
+                    accelerator = self.accelerator,
+                    dropout = config.dropout,
+                    train_sft_dataset = config.train_dataset,
+                    valid_sft_dataset = config.valid_dataset,
+                    max_seq_len = config.max_seq_len,
+                    pad_id = pad_id,
+                    spin_kwargs = {
+                        'λ': config.spin_λ,
+                        **spin_kwargs
+                    }
+                )
+
+                self.trainers.append(('spin', trainer))
+
+            else:
+                raise ValueError(f'you did not write out the logic for your custom trainer from your custom finetune config')
+
+        assert len(self.trainers) == len(finetune_configs)
 
         # checkpoints folder
 
@@ -806,6 +900,6 @@ class SelfRewardingTrainer(Module):
             finetuning_stage = ind + 1
             trainer()
 
-            self.save(f'{finetuning_stage}.{trainer_type}.ckpt.pt')
+            self.save(f'{finetuning_stage}.{trainer_type}.ckpt.pt', overwrite = overwrite_checkpoints)
 
         self.print(f'self-reward training done')

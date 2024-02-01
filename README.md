@@ -26,7 +26,8 @@ from torch import Tensor
 
 from self_rewarding_lm_pytorch import (
     SelfRewardingTrainer,
-    create_mock_dataset
+    create_mock_dataset,
+    create_default_paper_config
 )
 
 from x_transformers import TransformerWrapper, Decoder
@@ -41,7 +42,7 @@ transformer = TransformerWrapper(
     )
 )
 
-sft_train_dataset = create_mock_dataset(100, lambda: (torch.randint(0, 256, (256,)), torch.tensor(1)))
+sft_dataset = create_mock_dataset(100, lambda: (torch.randint(0, 256, (256,)), torch.tensor(1)))
 prompt_dataset = create_mock_dataset(100, lambda: 'mock prompt')
 
 def decode_tokens(tokens: Tensor) -> str:
@@ -53,22 +54,21 @@ def encode_str(seq_str: str) -> Tensor:
 
 trainer = SelfRewardingTrainer(
     transformer,
-    train_sft_dataset = sft_train_dataset,
-    num_spin_cycles = 0,
-    num_preference_pairs = [1, 1],
-    preference_max_seq_len = 64,
-    prompt_dataset = prompt_dataset,
-    tokenizer_encode = encode_str,
+    finetune_configs = create_default_paper_config(
+        train_sft_dataset = sft_dataset,
+        self_reward_prompt_dataset = prompt_dataset,
+        dpo_num_train_steps = 1000
+    ),
     tokenizer_decode = decode_tokens,
+    tokenizer_encode = encode_str,
     accelerate_kwargs = dict(
         cpu = True
-    ),
-    dpo_trainer_kwargs = dict(
-        batch_size = 1
     )
 )
 
 trainer(overwrite_checkpoints = True)
+
+# checkpoints after each finetuning stage will be saved to ./checkpoints
 ```
 
 SPIN can either enabled on `SelfRewardingTrainer` with the `spin = True` flag, or trained standalone as shown below
@@ -123,8 +123,7 @@ from self_rewarding_lm_pytorch import RewardConfig
 trainer = SelfRewardingTrainer(
     transformer,
     ...,
-    num_candidate_responses = 4,           # in the paper, they try 4 responses, and pick the max and min rewards for forming the preference pairs
-    reward_prompt_config = RewardConfig(
+    self_reward_prompt_config = RewardConfig(
         prompt_template = """
         Pretty please rate the following user prompt and response
         User: {{ prompt }}
@@ -140,6 +139,39 @@ trainer = SelfRewardingTrainer(
 )
 ```
 
+Finally, if you would like to experiment with arbitrary orders of fine-tuning, you will also have that flexiblity, by passing in `FinetuneConfig` instances into `finetune_configs` as a list
+
+ex. say you want to carry out research on interleaving SPIN, External Rewarding, and Self-Rewarding
+
+This idea originated from <a href="https://github.com/teknium1">Teknium</a> from a private discord channel.
+
+```python
+
+# import the configs
+
+from self_rewarding_lm_pytorch import (
+    SFTConfig,
+    SelfRewardDPOConfig,
+    ExternalRewardDPOConfig,
+    SelfPlayConfig,
+)
+
+trainer = SelfRewardingTrainer(
+    finetune_configs = [
+        SFTConfig(...),
+        SelfPlayConfig(...),
+        ExternalRewardDPOConfig(...),
+        SelfRewardDPOConfig(...),
+        SelfPlayConfig(...),
+        SelfRewardDPOConfig(...)
+    ]
+)
+
+trainer()
+
+# checkpoints after each finetuning stage will be saved to ./checkpoints
+```
+
 ## Todo
 
 - [x] generalize the sampling so that it can progress at different positions in the batch, fix all sampling to be batched. also allow for left padded sequences, in the case some people have transformers with relative positions that allow for that
@@ -149,12 +181,11 @@ trainer = SelfRewardingTrainer(
 - [x] early stopper
     - [x] handle break signal if all done on main process
     - [x] accept eval module, could be either validation loss or something more sophisticated. returns a scalar tensor or single int / float
+- [x] any order of sft, spin, self-rewarding dpo, dpo with external reward model
 
 - [ ] figure out how best to handle different impl of kv cache, for now just do without
 - [ ] consider KTO
-- [ ] any order of sft, spin, self-rewarding dpo, dpo with external reward model
 - [ ] allow for a validation function on the rewards (say reward must be integer, float, in between some range etc)
-- [ ] create a variant for both self-rewarding and SPIN where there are no iterations. both create their synthesized data live and reference model is updated with an EMA.
 
 ## Citation
 
