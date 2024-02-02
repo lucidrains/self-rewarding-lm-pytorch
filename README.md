@@ -70,7 +70,7 @@ trainer(overwrite_checkpoints = True)
 # checkpoints after each finetuning stage will be saved to ./checkpoints
 ```
 
-SPIN can either enabled on `SelfRewardingTrainer` with the `spin = True` flag, or trained standalone as shown below
+SPIN can be trained as follows - it can also be added to the fine-tuning pipeline as shown in the final example in the readme.
 
 ```python
 import torch
