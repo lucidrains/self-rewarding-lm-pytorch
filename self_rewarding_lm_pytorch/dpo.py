@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from copy import deepcopy
-from functools import cache
+from functools import lru_cache
 from collections import namedtuple
 from dataclasses import dataclass
 
@@ -55,7 +55,7 @@ def cycle(dl):
         for batch in dl:
             yield batch
 
-@cache
+@lru_cache(maxsize = None)
 def is_distributed():
     return dist.is_initialized() and dist.get_world_size() > 1
 

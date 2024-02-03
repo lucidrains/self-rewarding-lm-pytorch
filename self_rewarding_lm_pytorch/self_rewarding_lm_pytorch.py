@@ -382,6 +382,7 @@ class DPODatasetGenerator(Module):
         model: Module,
         prompt_dataset: Dataset,
         num_preference_pairs: int,
+        accelerator: Accelerator,
         tokenizer_encode: Callable[[str], TensorType['seq', int]],
         tokenizer_decode: Callable[[TensorType['seq', int]], str],
         batch_size: int = 16,
@@ -475,6 +476,12 @@ class DPODatasetGenerator(Module):
         self.prompt_len_memmap = open_memmap(str(self.prompt_len_memmap_path), dtype = 'int', mode = 'w+', shape = (num_preference_pairs,))
         self.self_reward_memmap_file = open_memmap(str(self.self_reward_mmemap_path), dtype = 'float32', mode = 'w+', shape = (num_preference_pairs, 2))
 
+        self.accelerator = accelerator
+
+    @property
+    def device(self):
+        return self.accelerator.device
+
     def generate_reward(
         self,
         prompt: str,
@@ -496,8 +503,11 @@ class DPODatasetGenerator(Module):
 
         reward_prompt = repeat(reward_prompt, 'n -> b n', b = self.num_evals_to_average)
 
+        reward_prompt = reward_prompt.to(self.device)
+        model = self.model.to(self.device)
+
         reward_responses = sample(
-            self.model,
+            model,
             prompts = reward_prompt,
             seq_len = self.generate_reward_max_seq_len,
             temperature = self.eval_temperature,
@@ -536,13 +546,16 @@ class DPODatasetGenerator(Module):
 
             responses = []
 
+            model = self.model.to(self.device)
+
             for prompt, prompt_tensor in zip(prompts, prompt_tensors):
 
                 prompt_len = prompt_tensor.shape[-1]
                 repeated_prompt_tensor = repeat(prompt_tensor, 'n -> r n', r = self.num_candidate_responses)
+                repeated_prompt_tensor = repeated_prompt_tensor.to(self.device)
 
                 candidate_tensor_responses = sample(
-                    self.model,
+                    model,
                     prompts = repeated_prompt_tensor,
                     seq_len = self.preference_max_seq_len,
                     temperature = self.gen_temperature,
@@ -802,6 +815,7 @@ class SelfRewardingTrainer(Module):
                     eval_temperature = config.eval_temperature,
                     eval_filter_fn = config.eval_filter_fn,
                     eval_filter_kwargs = config.eval_filter_kwargs,
+                    accelerator = self.accelerator,
                     **config.reward_generator_kwargs
                 )
 
