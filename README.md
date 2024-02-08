@@ -222,3 +222,13 @@ trainer()
     url     = {https://api.semanticscholar.org/CorpusID:258959321}
 }
 ```
+
+```bibtex
+@inproceedings{Guo2024DirectLM,
+    title   = {Direct Language Model Alignment from Online AI Feedback},
+    author  = {Shangmin Guo and Biao Zhang and Tianlin Liu and Tianqi Liu and Misha Khalman and Felipe Llinares and Alexandre Rame and Thomas Mesnard and Yao Zhao and Bilal Piot and Johan Ferret and Mathieu Blondel},
+    year    = {2024},
+    url     = {https://api.semanticscholar.org/CorpusID:267522951}
+}
+```
+

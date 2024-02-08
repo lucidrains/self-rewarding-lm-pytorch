@@ -385,6 +385,7 @@ class DPODatasetGenerator(Module):
         accelerator: Accelerator,
         tokenizer_encode: Callable[[str], TensorType['seq', int]],
         tokenizer_decode: Callable[[TensorType['seq', int]], str],
+        self_reward_model: Optional[Module] = None,
         batch_size: int = 16,
         num_candidate_responses: int = 4,
         gen_temperature: float = 0.7,
@@ -413,6 +414,7 @@ class DPODatasetGenerator(Module):
         self.model = model
         self.num_candidate_responses = num_candidate_responses
 
+        self.self_reward_model = default(self_reward_model, model)
         self.reward_config = reward_config.init()
 
         self.batch_size = batch_size
@@ -503,11 +505,11 @@ class DPODatasetGenerator(Module):
 
         reward_prompt = repeat(reward_prompt, 'n -> b n', b = self.num_evals_to_average)
 
-        reward_prompt = reward_prompt.to(self.device)
-        model = self.model.to(self.device)
+        reward_prompt = reward_prompt.to(device)
+        self_reward_model = self_reward_model.to(device)
 
         reward_responses = sample(
-            model,
+            self_reward_model,
             prompts = reward_prompt,
             seq_len = self.generate_reward_max_seq_len,
             temperature = self.eval_temperature,
@@ -654,6 +656,7 @@ class SelfRewardDPOConfig(FinetuneConfig):
     num_generated_preference_pairs: int
     dpo_beta: float = 0.1
     max_seq_len: int = 1024
+    rewarding_model: Optional[Module] = None   # defaults to self, but can be an external model, as done in OAIF https://arxiv.org/abs/2402.04792 (renamed "LLM Annotator")
     self_reward_config_keyname: str = 'default'
     is_valid_reward: Callable[float, bool] = lambda reward: reward >= 0
     is_valid_reward_pair: Callable[[Tensor, Tensor], bool] = default_is_valid_reward_pair
@@ -797,10 +800,13 @@ class SelfRewardingTrainer(Module):
 
                 assert config.self_reward_config_keyname in self_reward_prompt_config, f'reward prompt must be one of {self_reward_prompt_config.keys()}'
 
+                self_reward_model = default(config.rewarding_model, model)
+
                 self_reward_config = self_reward_prompt_config[config.self_reward_config_keyname]
 
                 self_reward_dataset_generator = DPODatasetGenerator(
                     model = model,
+                    self_reward_model = self_reward_model,
                     prompt_dataset = config.prompt_dataset,
                     reward_config = self_reward_config,
                     num_preference_pairs = config.num_generated_preference_pairs,
