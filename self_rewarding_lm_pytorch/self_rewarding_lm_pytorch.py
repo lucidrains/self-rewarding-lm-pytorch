@@ -404,7 +404,7 @@ class DPODatasetGenerator(Module):
         self_reward_memmap_file: str = 'self_reward.memmap.npy',
         preference_max_seq_len: int = 1024,
         generate_reward_max_seq_len: int = 256,
-        is_valid_reward: Callable[float, bool] = lambda *args: True,
+        is_valid_reward: Callable[[float], bool] = lambda *args: True,
         is_valid_reward_pair: Optional[Callable[[float, float], bool]] = None,
         pick_paired_rewards: Callable[[Tensor], Tensor] = default_pick_paired_rewards_fn,
         pad_id: int = -1
