@@ -658,7 +658,7 @@ class SelfRewardDPOConfig(FinetuneConfig):
     max_seq_len: int = 1024
     rewarding_model: Optional[Module] = None   # defaults to self, but can be an external model, as done in OAIF https://arxiv.org/abs/2402.04792 (renamed "LLM Annotator")
     self_reward_config_keyname: str = 'default'
-    is_valid_reward: Callable[float, bool] = lambda reward: reward >= 0
+    is_valid_reward: Callable[[float], bool] = lambda reward: reward >= 0
     is_valid_reward_pair: Callable[[Tensor, Tensor], bool] = default_is_valid_reward_pair
     pick_paired_rewards_fn: Callable[[Tensor], Tensor] = default_pick_paired_rewards_fn
     dropout: float = 0.1
