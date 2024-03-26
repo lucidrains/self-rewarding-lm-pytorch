@@ -506,7 +506,7 @@ class DPODatasetGenerator(Module):
         reward_prompt = repeat(reward_prompt, 'n -> b n', b = self.num_evals_to_average)
 
         reward_prompt = reward_prompt.to(device)
-        self_reward_model = self_reward_model.to(device)
+        self_reward_model = self.self_reward_model.to(device)
 
         reward_responses = sample(
             self_reward_model,
