@@ -869,7 +869,7 @@ class SelfRewardingTrainer(Module):
                     dpo = model,
                     accelerator = self.accelerator,
                     dataset_generator = self_reward_dataset_generator,
-                    dropout = dropout,
+                    dropout = config.dropout,
                     early_stopper_eval_module = config.early_stopper_eval_module,
                     early_stopper_kwargs = dict(
                         early_stop_checkpoint_folder = f'./early-stop-checkpoint.{dpo_iteration}',
