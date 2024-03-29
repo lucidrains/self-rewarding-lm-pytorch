@@ -351,7 +351,7 @@ class SFTTrainer(Module):
 
             self.steps += 1
 
-            if exists(self.valid_dataloader) and not (step % self.valid_every):
+            if exists(self.valid_dataloader) and not (self.steps % self.valid_every):
                 self.wait()
 
                 if self.accelerator.is_main_process:
