@@ -315,7 +315,7 @@ class SFTTrainer(Module):
         else:
             prompt_mask = prompt_len_or_mask
 
-        seq, labels = seq[:, :-1], seq[:, 1:]
+        seq, labels = seq[:, :-1].clone(), seq[:, 1:].clone()
 
         labels.masked_fill_(prompt_mask[:, 1:], self.ignore_index)
 
@@ -822,6 +822,7 @@ class SelfRewardingTrainer(Module):
                     eval_filter_fn = config.eval_filter_fn,
                     eval_filter_kwargs = config.eval_filter_kwargs,
                     accelerator = self.accelerator,
+                    pad_id = pad_id,
                     **config.reward_generator_kwargs
                 )
 
@@ -862,6 +863,7 @@ class SelfRewardingTrainer(Module):
                     eval_temperature = config.eval_temperature,
                     eval_filter_fn = config.eval_filter_fn,
                     eval_filter_kwargs = config.eval_filter_kwargs,
+                    pad_id = pad_id,
                     **config.reward_generator_kwargs
                 )
 
