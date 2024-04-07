@@ -317,7 +317,7 @@ class SFTTrainer(Module):
 
         seq, labels = seq[:, :-1].clone(), seq[:, 1:].clone()
 
-        labels.masked_fill_(prompt_mask[:, 1:], self.ignore_index)
+        labels.masked_fill_(~prompt_mask[:, 1:], self.ignore_index)
 
         logits = self.model(seq)
 
